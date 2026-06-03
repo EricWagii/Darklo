@@ -410,10 +410,10 @@ export default function RecognitionDiagnostics() {
                 </Card>
                 <Card className="p-6">
                   <div className="label mb-3">高置信错误</div>
-                  <div className="text-3xl font-bold" style={{ color: highConfidenceWrongRecords.length > 0 ? '#ff6b6b' : '#ddd' }}>
+                  <div className="text-3xl font-bold" style={{ color: (highConfidenceWrongRecords.length > 0) ? '#ff6b6b' : '#ddd' }}>
                     {highConfidenceWrongRecords.length}
                   </div>
-                  <div style={{ color: '#aaa', marginTop: '8px' }}>错误且置信度 >= 80</div>
+                  <div style={{ color: '#aaa', marginTop: '8px' }}>错误且置信度 &gt;= 80</div>
                 </Card>
                 <Card className="p-6">
                   <div className="label mb-3">平均 margin</div>
