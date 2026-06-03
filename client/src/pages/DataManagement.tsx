@@ -370,7 +370,7 @@ export default function DataManagement() {
       const validCommandNames = new Set(allCommands.map((cmd: any) => cmd.name));
       
       const validRecords = recognitionRecords.filter((record: any) => {
-        const cmdName = record.commandName || record.actualCommand;
+        const cmdName = record.actualCommand || record.commandName;
         return validCommandNames.has(cmdName);
       });
 
@@ -381,7 +381,7 @@ export default function DataManagement() {
 
       // ✅ Phase 5：转换为导出格式，包含所有诊断字段（统一为 0-100 分）
       const recognitionResults: RecognitionResultForExport[] = validRecords.map((record: any) => ({
-        command: record.commandName || 'unknown',
+        command: record.actualCommand || record.commandName || 'unknown',
         predictedCommand: record.predictedCommand || record.commandName || 'unknown',
         actualCommand: record.actualCommand || undefined,
         isCorrect: record.isCorrect,
@@ -426,7 +426,7 @@ export default function DataManagement() {
       const validCommandNames = new Set(allCommands.map((cmd: any) => cmd.name));
       
       const validRecords = recognitionRecords.filter((record: any) => {
-        const cmdName = record.commandName || record.actualCommand;
+        const cmdName = record.actualCommand || record.commandName;
         return validCommandNames.has(cmdName);
       });
 
@@ -437,7 +437,7 @@ export default function DataManagement() {
 
       // ✅ 修复：转换为导出格式，包含所有字段
       const recognitionResults: RecognitionResultForExport[] = validRecords.map((record: any) => ({
-        command: record.commandName || 'unknown',
+        command: record.actualCommand || record.commandName || 'unknown',
         predictedCommand: record.predictedCommand || record.commandName || 'unknown',
         actualCommand: record.actualCommand || undefined,
         isCorrect: record.isCorrect,
@@ -478,7 +478,7 @@ export default function DataManagement() {
         // ✅ 修复：添加所有字段
         predictedCommand: record.predictedCommand || record.commandName || 'unknown',
         actualCommand: record.actualCommand,
-        command: record.commandName || 'unknown',
+        command: record.actualCommand || record.commandName || 'unknown',
         confidence: record.confidence ?? record.similarity ?? 0,
         allScores: record.allScores,
         threshold: record.threshold,

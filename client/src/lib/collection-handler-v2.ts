@@ -285,9 +285,12 @@ export async function handleSaveAfterAnomalyRemoval(
     logger.log(`删除 ${indicesToRemove.length} 条异常波形后，剩余 ${filteredWaveforms.length} 条`);
 
     // 准备保存数据
+    const existingCommand = await emgDatabase.getCommand(commandName);
+    const nextIndex = existingCommand?.collections?.length || 0;
+
     const collectionsToSave = filteredWaveforms.map((wf, idx) => ({
       id: `col-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`,
-      index: idx,
+      index: nextIndex + idx,
       timestamp: Date.now(),
       waveform: {
         ch1: wf.ch1,
@@ -304,7 +307,6 @@ export async function handleSaveAfterAnomalyRemoval(
 
     // 保存到数据库
     // ✅ 修复3：直接从IndexedDB查询指令，并合并旧样本
-    const existingCommand = await emgDatabase.getCommand(commandName);
     const commandId = existingCommand?.id || `cmd-${Date.now()}`;
 
     // ✅ 修复3：合并旧样本和新样本，而不是覆盖

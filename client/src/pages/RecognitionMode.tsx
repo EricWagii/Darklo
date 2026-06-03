@@ -23,11 +23,7 @@ import { HardwareStatusComponent } from '@/components/HardwareStatus';
 import { useSerialConnectionContext } from '@/contexts/SerialConnectionContext';
 import { extractFullFeatures, normalizeFeatures } from '@/lib/dsp-processor';
 // import { dtwFeatures } from '@/lib/dtw-algorithm';  // 不再使用DTW
-import { 
-  calculateChannelWeights, 
-  fuseChannelFeatures,
-  adaptiveThresholdManager 
-} from '@/lib/multi-channel-fusion';
+import { adaptiveThresholdManager } from '@/lib/multi-channel-fusion';
 import { detectElectrodeStatus, isElectrodeStatusAcceptable, calculateSignalStats } from '@/lib/electrode-detection';
 import { ElectrodeDetectionPanel } from '@/components/ElectrodeDetectionPanel';
 import { cnnModelManager, CommandTrainingData } from '@/lib/cnn-model-manager';
@@ -162,19 +158,19 @@ export default function RecognitionMode() {
     return { min, max, peak, mean, rms, variance, saturationRatio, zeroRatio, quality };
   };
   
-  // ✅ 修复3：计算通道权重：基于质量指标
+  // ✅ 修复：计算通道权重。ch2 是当前硬件安装下的主判别通道，质量评分只做校准，不覆盖先验。
   const calculateChannelWeights = (ch1Diag: any, ch2Diag: any, ch3Diag: any): any => {
     const qualityScore = (quality: string) => {
       switch (quality) {
-        case 'good': return 3;
-        case 'fair': return 2;
-        default: return 1;
+        case 'good': return 1.2;
+        case 'fair': return 1.0;
+        default: return 0.6;
       }
     };
     
-    const score1 = qualityScore(ch1Diag.quality);
-    const score2 = qualityScore(ch2Diag.quality);
-    const score3 = qualityScore(ch3Diag.quality);
+    const score1 = 0.25 * qualityScore(ch1Diag.quality);
+    const score2 = 0.65 * qualityScore(ch2Diag.quality);
+    const score3 = 0.10 * qualityScore(ch3Diag.quality);
     
     const totalScore = score1 + score2 + score3;
     const weight1 = totalScore > 0 ? score1 / totalScore : 0.30;
@@ -221,7 +217,7 @@ export default function RecognitionMode() {
                 ...(cmd.collections || [])
               ];
               // 更新createdAt为最早的时间
-              const existingTime = existing.createdAt.getTime();
+              const existingTime = new Date(existing.createdAt).getTime();
               const newTime = new Date(cmd.createdAt).getTime();
               if (newTime < existingTime) {
                 existing.createdAt = new Date(cmd.createdAt);
@@ -476,20 +472,7 @@ export default function RecognitionMode() {
           return;
         }
       } else {
-        // 使用多通道融合和自适应阈值的欧氏距离识别
-        const features = extractFullFeatures(
-          normalizedWaveform.ch1,
-          normalizedWaveform.ch2,
-          normalizedWaveform.ch3
-        );
-
-        // 计算通道权重（基于 SNR）
-        const weights = calculateChannelWeights(
-          normalizedWaveform.ch1,
-          normalizedWaveform.ch2,
-          normalizedWaveform.ch3
-        );
-
+        // 使用通道独立特征比对，再按通道质量权重合成指令分数。
         // ✅ 修复：提取每个通道的特征（不融合）
         // 原因：通道比对比融合比对更有效，可以避免干扰通道的干扰
         const testFeatures = extractFullFeatures(

@@ -165,7 +165,10 @@ export class EMGDatabase {
             
             // 先删除旧记录
             for (const cmd of matchingCommands) {
-              writeStore.delete(cmd.key);
+              const deleteKey = cmd.key || cmd.name;
+              if (deleteKey) {
+                writeStore.delete(deleteKey);
+              }
             }
             
             // 保存新记录
@@ -602,7 +605,10 @@ export class EMGDatabase {
             const store = transaction.objectStore(DB_CONFIG.STORES.COMMANDS);
             
             for (const cmd of matchingCommands) {
-              store.delete(cmd.key);
+              const deleteKey = cmd.key || cmd.name;
+              if (deleteKey) {
+                store.delete(deleteKey);
+              }
             }
             
             // 现在删除采集
