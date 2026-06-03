@@ -179,17 +179,18 @@ export default function RecognitionDiagnostics() {
   const feedbackRecords = validRecords.filter((record) => {
     return (record.recordType || 'feedback') === 'feedback';
   });
-  const uncertainRecords = validRecords.filter((record) => isUncertain(predictedCommandOf(record)));
-  const highConfidenceWrongRecords = validRecords.filter((record) => {
+  const analysisRecords = feedbackRecords;
+  const uncertainRecords = analysisRecords.filter((record) => isUncertain(predictedCommandOf(record)));
+  const highConfidenceWrongRecords = analysisRecords.filter((record) => {
     return record.isCorrect === false && numberValue(record.confidence ?? record.similarity) >= 80;
   });
-  const lowMarginRecords = validRecords.filter((record) => numberValue(record.scoreMargin) > 0 && numberValue(record.scoreMargin) < 5);
-  const correctRecords = validRecords.filter((record) => record.isCorrect === true);
-  const avgMargin = average(validRecords.map((record) => numberValue(record.scoreMargin)).filter((value) => value > 0));
-  const avgConfidence = average(validRecords.map((record) => numberValue(record.confidence ?? record.similarity)));
+  const lowMarginRecords = analysisRecords.filter((record) => numberValue(record.scoreMargin) > 0 && numberValue(record.scoreMargin) < 5);
+  const correctRecords = analysisRecords.filter((record) => record.isCorrect === true);
+  const avgMargin = average(analysisRecords.map((record) => numberValue(record.scoreMargin)).filter((value) => value > 0));
+  const avgConfidence = average(analysisRecords.map((record) => numberValue(record.confidence ?? record.similarity)));
 
   const commandStats: CommandStats[] = Array.from(validCommandNames).map((command) => {
-    const commandRecords = validRecords.filter((record) => actualCommandOf(record) === command);
+    const commandRecords = analysisRecords.filter((record) => actualCommandOf(record) === command);
     const correct = commandRecords.filter((record) => record.isCorrect === true).length;
     const confidences = commandRecords.map((record) => numberValue(record.confidence ?? record.similarity));
     const margins = commandRecords.map((record) => numberValue(record.scoreMargin)).filter((value) => value > 0);
@@ -210,7 +211,7 @@ export default function RecognitionDiagnostics() {
     };
   }).sort((a, b) => a.accuracy - b.accuracy || b.count - a.count);
 
-  const recordsWithWeights = validRecords.filter((record) => record.channelWeights);
+  const recordsWithWeights = analysisRecords.filter((record) => record.channelWeights);
   const avgWeights = {
     ch1: average(recordsWithWeights.map((record) => numberValue(record.channelWeights?.ch1))),
     ch2: average(recordsWithWeights.map((record) => numberValue(record.channelWeights?.ch2))),
@@ -219,7 +220,7 @@ export default function RecognitionDiagnostics() {
 
   const qualityCounts = ['ch1', 'ch2', 'ch3'].reduce<Record<string, Record<string, number>>>((acc, channel) => {
     acc[channel] = {};
-    validRecords.forEach((record) => {
+    analysisRecords.forEach((record) => {
       const quality = record.channelDiagnostics?.[channel as 'ch1' | 'ch2' | 'ch3']?.quality || 'unknown';
       acc[channel][quality] = (acc[channel][quality] || 0) + 1;
     });
@@ -238,7 +239,7 @@ export default function RecognitionDiagnostics() {
   }, {});
   const duplicateCommands = Object.entries(duplicateCommandNames).filter(([, count]) => count > 1);
 
-  const confusionPairs = validRecords
+  const confusionPairs = analysisRecords
     .filter((record) => record.isCorrect === false && !isUncertain(predictedCommandOf(record)))
     .reduce<Record<string, { actual: string; predicted: string; count: number; avgConfidence: number; avgMargin: number }>>((acc, record) => {
       const actual = actualCommandOf(record);
@@ -282,7 +283,7 @@ export default function RecognitionDiagnostics() {
       detail: `${highConfidenceWrongRecords.length} 条记录错误但置信度 >= 80，说明评分校准或模板区分度仍有问题。`,
     });
   }
-  if (lowMarginRecords.length > Math.max(2, validRecords.length * 0.25)) {
+  if (lowMarginRecords.length > Math.max(2, analysisRecords.length * 0.25)) {
     issues.push({
       level: 'warning',
       title: '低 margin 记录集中',
@@ -321,7 +322,8 @@ export default function RecognitionDiagnostics() {
         recordCount: records.length,
         validRecordCount: validRecords.length,
         staleRecordCount: staleRecords.length,
-        accuracy: percent(correctRecords.length, validRecords.length),
+        analysisRecordCount: analysisRecords.length,
+        accuracy: percent(correctRecords.length, analysisRecords.length),
         avgConfidence,
         avgMargin,
         uncertainCount: uncertainRecords.length,
@@ -381,10 +383,10 @@ export default function RecognitionDiagnostics() {
                 </Card>
                 <Card className="p-6 min-h-[150px]">
                   <div className="label mb-3">总体准确率</div>
-                  <div className="text-4xl font-bold" style={{ color: correctRecords.length === validRecords.length && validRecords.length > 0 ? '#5fd17a' : '#d4af37' }}>
-                    {percent(correctRecords.length, validRecords.length)}
+                  <div className="text-4xl font-bold" style={{ color: correctRecords.length === analysisRecords.length && analysisRecords.length > 0 ? '#5fd17a' : '#d4af37' }}>
+                    {percent(correctRecords.length, analysisRecords.length)}
                   </div>
-                  <div style={{ color: '#aaa', marginTop: '8px' }}>{correctRecords.length}/{validRecords.length} 正确</div>
+                  <div style={{ color: '#aaa', marginTop: '8px' }}>{correctRecords.length}/{analysisRecords.length} 正确反馈</div>
                 </Card>
                 <Card className="p-6 min-h-[150px]">
                   <div className="label mb-3">旧记录污染</div>
@@ -399,7 +401,7 @@ export default function RecognitionDiagnostics() {
                 <Card className="p-6">
                   <div className="label mb-3">不确定记录</div>
                   <div className="text-3xl font-bold">{uncertainRecords.length}</div>
-                  <div style={{ color: '#aaa', marginTop: '8px' }}>{percent(uncertainRecords.length, validRecords.length)}</div>
+                  <div style={{ color: '#aaa', marginTop: '8px' }}>{percent(uncertainRecords.length, analysisRecords.length)}</div>
                 </Card>
                 <Card className="p-6">
                   <div className="label mb-3">低 margin</div>
@@ -416,7 +418,7 @@ export default function RecognitionDiagnostics() {
                 <Card className="p-6">
                   <div className="label mb-3">平均 margin</div>
                   <div className="text-3xl font-bold">
-                    {formatNumber(average(validRecords.map((record) => numberValue(record.scoreMargin)).filter((value) => value > 0)))}
+                    {formatNumber(avgMargin)}
                   </div>
                   <div style={{ color: '#aaa', marginTop: '8px' }}>top1 与 top2 差距</div>
                 </Card>
