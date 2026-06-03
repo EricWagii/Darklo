@@ -400,7 +400,7 @@ export function ImprovedQualityScoreList({
         ) : (
           scores.map((score) => (
             <ImprovedQualityScoreDisplay
-              key={score.index}
+              key={score.id}
               score={score}
               index={score.index}
               onDelete={onDelete ? () => onDelete(score.id) : undefined}

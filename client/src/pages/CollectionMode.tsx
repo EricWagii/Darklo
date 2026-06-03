@@ -221,6 +221,11 @@ export default function CollectionMode() {
 
   // 更新质量评分（使用改进的算法）
   useEffect(() => {
+    if (collectionHistory.length === 0) {
+      setQualityScores([]);
+      return;
+    }
+
     if (collectionHistory.length >= 1) {
       try {
         const scores = evaluateAllCollectionsImproved(
@@ -242,19 +247,26 @@ export default function CollectionMode() {
   const handleDeleteCollection = (id: string) => {
     // 问题3.1修复：使用UUID而不是数组下标
     const deletedCollection = collectionHistory.find(col => col.id === id);
-    const newHistory = collectionHistory.filter(col => col.id !== id);
+    const deletedDisplayIndex = collectionHistory.findIndex(col => col.id === id) + 1;
+    const newHistory = collectionHistory
+      .filter(col => col.id !== id)
+      .map((col, idx) => ({
+        ...col,
+        index: idx + 1,
+      }));
     setCollectionHistory(newHistory);
     setCollectionCount(newHistory.length);
-    const collectionIndex = deletedCollection ? deletedCollection.index : '?';
+    const collectionIndex = deletedCollection ? deletedDisplayIndex : '?';
     toast.success(`已削除采集 #${collectionIndex}`);
   };
 
   // 重录指定采集（削除并提示用户重新采集）
   const handleRetryCollection = (id: string) => {
     const collection = collectionHistory.find(col => col.id === id);
+    const retryDisplayIndex = collectionHistory.findIndex(col => col.id === id) + 1;
     handleDeleteCollection(id);
     if (collection) {
-      toast.info(`请重新采集数据来替换采集 #${collection.index}`);
+      toast.info(`请重新采集数据来替换采集 #${retryDisplayIndex}`);
     }
   };
 
@@ -924,6 +936,7 @@ export default function CollectionMode() {
               overflowY: 'auto',
             }}>
               {collectionHistory.map((col, idx) => {
+                const displayIndex = idx + 1;
                 // 问题4.1修复：使用专用的颜色函数
                 const statusIcon = col.croppingMeta?.stage === 'primary' ? '✅' : col.croppingMeta?.stage === 'fallback' ? '⚠️' : '❌';
                 const statusLabel = col.croppingMeta?.stage === 'primary' ? '已裁剪/已缩放' : col.croppingMeta?.stage === 'fallback' ? '已裁剪/已缩放(降级)' : '使用全段';
@@ -931,7 +944,7 @@ export default function CollectionMode() {
                 const confidencePercent = col.croppingMeta ? (col.croppingMeta.confidence * 100).toFixed(0) : 'N/A';
                 
                 return (
-                  <div key={idx} style={{
+                  <div key={col.id} style={{
                     backgroundColor: '#0a0a0a',
                     border: '1px solid #333',
                     borderRadius: '4px',
@@ -939,7 +952,7 @@ export default function CollectionMode() {
                   }}>
                     <div style={{ marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div style={{ fontSize: '12px', color: '#d4af37', fontWeight: 'bold' }}>
-                        采集 #{col.index} - {col.duration}s
+                        采集 #{displayIndex} - {col.duration}s
                       </div>
                       <div style={{
                         display: 'inline-flex',
@@ -957,7 +970,7 @@ export default function CollectionMode() {
                       </div>
                     </div>
                     <div style={{ height: '120px', backgroundColor: '#1a1a1a', borderRadius: '4px', padding: '8px' }}>
-                      <ThumbnailWaveform ch1={col.waveform.ch1} ch2={col.waveform.ch2} ch3={col.waveform.ch3} index={col.index} />
+                      <ThumbnailWaveform ch1={col.waveform.ch1} ch2={col.waveform.ch2} ch3={col.waveform.ch3} index={displayIndex} />
                     </div>
                   </div>
                 );
@@ -1065,8 +1078,8 @@ export default function CollectionMode() {
         {/* 波形对比面板 */}
         {showComparisonPanel && collectionHistory.length > 0 && (
           <WaveformComparisonPanel
-            waveforms={collectionHistory.map((col) => ({
-              index: col.index,
+            waveforms={collectionHistory.map((col, idx) => ({
+              index: idx + 1,
               ch1: col.waveform.ch1,
               ch2: col.waveform.ch2,
               ch3: col.waveform.ch3,
