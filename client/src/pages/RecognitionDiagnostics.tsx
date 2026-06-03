@@ -30,6 +30,7 @@ type RecognitionRecord = {
   actualCommand?: string;
   predictedCommand?: string;
   command?: string;
+  recordType?: string;
   isCorrect?: boolean;
   confidence?: number;
   similarity?: number;
@@ -54,6 +55,12 @@ type CommandStats = {
   avgMargin: number;
   highConfidenceWrong: number;
   lowMargin: number;
+};
+
+type DiagnosticIssue = {
+  level: 'critical' | 'warning' | 'info';
+  title: string;
+  detail: string;
 };
 
 const isUncertain = (command?: string): boolean => {
@@ -91,6 +98,18 @@ const timestampOf = (record: RecognitionRecord): number => {
   if (typeof record.timestamp === 'number') return record.timestamp;
   const time = new Date(record.timestamp).getTime();
   return Number.isFinite(time) ? time : 0;
+};
+
+const downloadJson = (filename: string, data: unknown) => {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 };
 
 const tableStyle: React.CSSProperties = {
@@ -157,12 +176,17 @@ export default function RecognitionDiagnostics() {
     return !validCommandNames.has(actualCommandOf(record));
   });
 
+  const feedbackRecords = validRecords.filter((record) => {
+    return (record.recordType || 'feedback') === 'feedback';
+  });
   const uncertainRecords = validRecords.filter((record) => isUncertain(predictedCommandOf(record)));
   const highConfidenceWrongRecords = validRecords.filter((record) => {
     return record.isCorrect === false && numberValue(record.confidence ?? record.similarity) >= 80;
   });
   const lowMarginRecords = validRecords.filter((record) => numberValue(record.scoreMargin) > 0 && numberValue(record.scoreMargin) < 5);
   const correctRecords = validRecords.filter((record) => record.isCorrect === true);
+  const avgMargin = average(validRecords.map((record) => numberValue(record.scoreMargin)).filter((value) => value > 0));
+  const avgConfidence = average(validRecords.map((record) => numberValue(record.confidence ?? record.similarity)));
 
   const commandStats: CommandStats[] = Array.from(validCommandNames).map((command) => {
     const commandRecords = validRecords.filter((record) => actualCommandOf(record) === command);
@@ -207,6 +231,110 @@ export default function RecognitionDiagnostics() {
     .slice(0, 20);
 
   const totalCollections = commands.reduce((sum, command) => sum + (command.collections?.length || 0), 0);
+  const duplicateCommandNames = commands.reduce<Record<string, number>>((acc, command) => {
+    const name = command.name || command.key || 'unknown';
+    acc[name] = (acc[name] || 0) + 1;
+    return acc;
+  }, {});
+  const duplicateCommands = Object.entries(duplicateCommandNames).filter(([, count]) => count > 1);
+
+  const confusionPairs = validRecords
+    .filter((record) => record.isCorrect === false && !isUncertain(predictedCommandOf(record)))
+    .reduce<Record<string, { actual: string; predicted: string; count: number; avgConfidence: number; avgMargin: number }>>((acc, record) => {
+      const actual = actualCommandOf(record);
+      const predicted = predictedCommandOf(record);
+      const key = `${actual} -> ${predicted}`;
+      const existing = acc[key] || { actual, predicted, count: 0, avgConfidence: 0, avgMargin: 0 };
+      const nextCount = existing.count + 1;
+      acc[key] = {
+        actual,
+        predicted,
+        count: nextCount,
+        avgConfidence: ((existing.avgConfidence * existing.count) + numberValue(record.confidence ?? record.similarity)) / nextCount,
+        avgMargin: ((existing.avgMargin * existing.count) + numberValue(record.scoreMargin)) / nextCount,
+      };
+      return acc;
+    }, {});
+
+  const topConfusions = Object.values(confusionPairs)
+    .sort((a, b) => b.count - a.count || b.avgConfidence - a.avgConfidence)
+    .slice(0, 10);
+
+  const issues: DiagnosticIssue[] = [];
+  if (duplicateCommands.length > 0) {
+    issues.push({
+      level: 'critical',
+      title: '存在同名指令记录',
+      detail: duplicateCommands.map(([name, count]) => `${name} x${count}`).join('，'),
+    });
+  }
+  if (staleRecords.length > 0) {
+    issues.push({
+      level: 'critical',
+      title: '存在旧记录污染',
+      detail: `${staleRecords.length} 条识别记录不属于当前有效指令集，应在删除指令时级联清理。`,
+    });
+  }
+  if (highConfidenceWrongRecords.length > 0) {
+    issues.push({
+      level: 'critical',
+      title: '高置信错误偏多',
+      detail: `${highConfidenceWrongRecords.length} 条记录错误但置信度 >= 80，说明评分校准或模板区分度仍有问题。`,
+    });
+  }
+  if (lowMarginRecords.length > Math.max(2, validRecords.length * 0.25)) {
+    issues.push({
+      level: 'warning',
+      title: '低 margin 记录集中',
+      detail: `${lowMarginRecords.length} 条记录 top1 与 top2 差距小于 5，指令间可分性不足。`,
+    });
+  }
+  if (recordsWithWeights.length > 0 && avgWeights.ch2 < 0.45) {
+    issues.push({
+      level: 'warning',
+      title: 'ch2 权重偏低',
+      detail: `当前平均 ch2 权重为 ${formatNumber(avgWeights.ch2 * 100)}%，低于预期主判别通道权重。`,
+    });
+  }
+  if (feedbackRecords.length < validRecords.length) {
+    issues.push({
+      level: 'info',
+      title: '存在非反馈记录',
+      detail: `${validRecords.length - feedbackRecords.length} 条有效记录不是 feedback 类型，统计时需谨慎。`,
+    });
+  }
+  if (issues.length === 0) {
+    issues.push({
+      level: 'info',
+      title: '未发现结构性数据问题',
+      detail: '当前记录没有明显旧数据污染、同名指令或高置信错误集中现象。',
+    });
+  }
+
+  const exportDiagnostics = () => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    downloadJson(`recognition-diagnostics-${timestamp}.json`, {
+      exportTime: new Date().toISOString(),
+      overview: {
+        commandCount: commands.length,
+        collectionCount: totalCollections,
+        recordCount: records.length,
+        validRecordCount: validRecords.length,
+        staleRecordCount: staleRecords.length,
+        accuracy: percent(correctRecords.length, validRecords.length),
+        avgConfidence,
+        avgMargin,
+        uncertainCount: uncertainRecords.length,
+        highConfidenceWrongCount: highConfidenceWrongRecords.length,
+        lowMarginCount: lowMarginRecords.length,
+        avgWeights,
+      },
+      issues,
+      commandStats,
+      topConfusions,
+      recentRecords,
+    });
+  };
 
   return (
     <div className="min-h-screen" style={{ color: '#fff', paddingBottom: '40px' }}>
@@ -223,6 +351,7 @@ export default function RecognitionDiagnostics() {
               <Button variant="secondary" onClick={() => navigate('/')}>返回主页</Button>
               <Button variant="secondary" onClick={() => navigate('/recognition')}>默念测试</Button>
               <Button variant="secondary" onClick={() => navigate('/data-management')}>数据管理</Button>
+              <Button variant="secondary" onClick={exportDiagnostics}>导出诊断</Button>
               <Button variant="primary" onClick={loadDiagnostics}>刷新</Button>
             </div>
           </div>
@@ -295,6 +424,20 @@ export default function RecognitionDiagnostics() {
 
               <Divider />
 
+              <SectionLabel number="00">AUTO FINDINGS</SectionLabel>
+              <Grid cols={Math.min(3, Math.max(1, issues.length))} gap="md" className="mb-8">
+                {issues.map((issue, index) => {
+                  const color = issue.level === 'critical' ? '#ff6b6b' : issue.level === 'warning' ? '#fbbf24' : '#5fd17a';
+                  return (
+                    <Card className="p-6" key={`${issue.title}-${index}`}>
+                      <div className="label mb-3" style={{ color }}>{issue.level.toUpperCase()}</div>
+                      <div className="text-xl font-bold mb-3">{issue.title}</div>
+                      <div style={{ color: '#aaa', lineHeight: '1.7', fontSize: '14px' }}>{issue.detail}</div>
+                    </Card>
+                  );
+                })}
+              </Grid>
+
               <SectionLabel number="01">COMMAND ACCURACY</SectionLabel>
               <div style={{ overflowX: 'auto', marginBottom: '36px' }}>
                 <table style={tableStyle}>
@@ -344,7 +487,39 @@ export default function RecognitionDiagnostics() {
                 ))}
               </Grid>
 
-              <SectionLabel number="03">RECENT RECOGNITION RECORDS</SectionLabel>
+              <SectionLabel number="03">CONFUSION PAIRS</SectionLabel>
+              <div style={{ overflowX: 'auto', marginBottom: '36px' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>真实指令</th>
+                      <th style={thStyle}>误识别为</th>
+                      <th style={thStyle}>次数</th>
+                      <th style={thStyle}>平均置信度</th>
+                      <th style={thStyle}>平均 margin</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topConfusions.length === 0 ? (
+                      <tr>
+                        <td style={tdStyle} colSpan={5}>暂无明确误识别对</td>
+                      </tr>
+                    ) : (
+                      topConfusions.map((pair) => (
+                        <tr key={`${pair.actual}-${pair.predicted}`}>
+                          <td style={tdStyle}>{pair.actual}</td>
+                          <td style={tdStyle}>{pair.predicted}</td>
+                          <td style={tdStyle}>{pair.count}</td>
+                          <td style={tdStyle}>{formatNumber(pair.avgConfidence)}%</td>
+                          <td style={tdStyle}>{formatNumber(pair.avgMargin)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <SectionLabel number="04">RECENT RECOGNITION RECORDS</SectionLabel>
               <div style={{ overflowX: 'auto' }}>
                 <table style={tableStyle}>
                   <thead>
