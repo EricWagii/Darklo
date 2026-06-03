@@ -188,6 +188,9 @@ export default function Home() {
               <Button variant="secondary" onClick={() => navigate('/data-management')}>
                 数据管理
               </Button>
+              <Button variant="secondary" onClick={() => navigate('/recognition-diagnostics')}>
+                识别诊断
+              </Button>
 
               {isLoggedIn && currentUser?.isAdmin && (
                 <Button variant="secondary" onClick={() => navigate('/admin')}>

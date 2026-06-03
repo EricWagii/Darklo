@@ -448,6 +448,13 @@ export default function DataManagement() {
         recordType: record.recordType || 'unknown',  // ✅ 修复：添加 recordType
         croppingMeta: undefined,
         timestamp: typeof record.timestamp === 'number' ? record.timestamp : new Date(record.timestamp).getTime(),
+        // ✅ Phase 6：JSON 导出与 CSV 保持一致，避免诊断包缺失关键字段
+        top1Score: record.top1Score ?? 0,
+        top2Score: record.top2Score ?? 0,
+        scoreMargin: record.scoreMargin ?? 0,
+        channelWeights: record.channelWeights || { ch1: 0.30, ch2: 0.60, ch3: 0.10 },
+        channelDiagnostics: record.channelDiagnostics || {},
+        matchedCollectionScores: record.matchedCollectionScores || [],
       }));
 
       exportRecognitionResultsToJSON(recognitionResults);

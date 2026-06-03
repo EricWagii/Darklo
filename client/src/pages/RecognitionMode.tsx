@@ -96,6 +96,20 @@ interface StoredCommand {
   createdAt: Date;
 }
 
+const isUncertainRecognition = (command: string): boolean => {
+  return command.startsWith('❌ 识别不确定');
+};
+
+const medianScore = (scores: number[]): number => {
+  if (scores.length === 0) return 0;
+  const sorted = [...scores].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+  return sorted[middle];
+};
+
 export default function RecognitionMode() {
   const [location, navigate] = useLocation();
   const { isConnected, onDataReceived } = useSerialConnectionContext();
@@ -579,11 +593,13 @@ export default function RecognitionMode() {
           
           // 计算三种策略的分数，用于诊断对比
           const top1Score = sortedScores[0] || 0;
-          const top3Median = sampleCount >= 3 ? sortedScores[1] : (sortedScores[0] || 0); // 不一定有 top3
-          const allMedian = sortedScores[Math.floor(sampleCount / 2)] || 0;
+          const top3Scores = sortedScores.slice(0, Math.min(3, sortedScores.length));
+          const top3Median = medianScore(top3Scores);
+          const allMedian = medianScore(sortedScores);
           
-          // 使用 top1 作为主要分数（最保守）
-          const score = top1Score;
+          // 真实肌电样本波动较大，单条模板 top1 容易偶然高分；>=3 条采集时用 top3 中位数作为主分数。
+          const score = sampleCount >= 3 ? top3Median : top1Score;
+          topKValue = Math.max(topKValue, top3Scores.length || 1);
           
           scores.push({
             command: cmd.name,
@@ -659,7 +675,7 @@ export default function RecognitionMode() {
       // 显示反馈面板（仅在识别成功时）
       setLastRecognitionResult(result);
       // 只有当识别成功且置信度足够高时才显示反馈
-      const isRecognitionSuccess = result.command !== '❌ 识别不确定';
+      const isRecognitionSuccess = !isUncertainRecognition(result.command);
       setShowFeedback(isRecognitionSuccess);
       setSelectedTrueCommand('');
       setError(null);
@@ -707,14 +723,14 @@ export default function RecognitionMode() {
           predictedSimilarity: similarity,
           predictedConfidence: confidence,
           trueCommand: selectedTrueCommand,
-          isCorrect: lastRecognitionResult.command === selectedTrueCommand,
+          isCorrect: !isUncertainRecognition(lastRecognitionResult.command) && lastRecognitionResult.command === selectedTrueCommand,
           topMatches: lastRecognitionResult.allScores.map((s: any) => ({ command: s.command, similarity: s.score })),
         },
         selectedTrueCommand
       );
       
       // 5. 更新自适应阈值
-      const isCorrect = lastRecognitionResult.command === selectedTrueCommand;
+      const isCorrect = !isUncertainRecognition(lastRecognitionResult.command) && lastRecognitionResult.command === selectedTrueCommand;
       if (isCorrect) {
         const newThreshold = Math.max(0.5, adaptiveThreshold - 0.05);
         setAdaptiveThreshold(newThreshold);

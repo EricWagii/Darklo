@@ -13,6 +13,7 @@ import { UserSessionProvider } from "./contexts/UserSessionContext";
 import Home from "./pages/Home";
 import CollectionMode from "./pages/CollectionMode";
 import RecognitionMode from "./pages/RecognitionMode";
+import RecognitionDiagnostics from "./pages/RecognitionDiagnostics";
 import DataManagement from "./pages/DataManagement";
 import Settings from "./pages/Settings";
 import DemoMode from "./pages/DemoMode";
@@ -42,6 +43,13 @@ function Router() {
         {() => (
           <ProtectedRoute>
             <RecognitionMode />
+          </ProtectedRoute>
+        )}
+      </Route>
+      <Route path="/recognition-diagnostics">
+        {() => (
+          <ProtectedRoute>
+            <RecognitionDiagnostics />
           </ProtectedRoute>
         )}
       </Route>

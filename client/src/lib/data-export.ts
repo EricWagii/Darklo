@@ -200,6 +200,12 @@ export interface RecognitionResultForExport {
   topK?: number;             // ✅ 修复：添加 topK
   isCorrect?: boolean;       // ✅ 修复：添加是否正确
   recordType?: string;       // ✅ 修复：添加记录类型（feedback/prediction）
+  top1Score?: number;
+  top2Score?: number;
+  scoreMargin?: number;
+  channelWeights?: { ch1: number; ch2: number; ch3: number };
+  channelDiagnostics?: any;
+  matchedCollectionScores?: number[];
   croppingMeta?: {
     stage: string;
     confidence: number;
@@ -230,6 +236,13 @@ export function exportRecognitionResultsToCSV(
     '阈值',
     'topK',
     '记录类型',
+    'top1分数',
+    'top2分数',
+    '分数差距',
+    'CH1权重',
+    'CH2权重',
+    'CH3权重',
+    '匹配样本分数',
     '识别时间',
   ];
   const rows: string[][] = [];
@@ -245,6 +258,13 @@ export function exportRecognitionResultsToCSV(
       (result.threshold ?? 0).toFixed(4),
       (result.topK ?? 0).toString(),
       result.recordType || 'unknown',
+      (result.top1Score ?? 0).toFixed(4),
+      (result.top2Score ?? 0).toFixed(4),
+      (result.scoreMargin ?? 0).toFixed(4),
+      (result.channelWeights?.ch1 ?? 0).toFixed(4),
+      (result.channelWeights?.ch2 ?? 0).toFixed(4),
+      (result.channelWeights?.ch3 ?? 0).toFixed(4),
+      JSON.stringify(result.matchedCollectionScores || []),
       recognitionTime,
     ]);
   });
@@ -284,6 +304,12 @@ export function exportRecognitionResultsToJSON(
       topK: result.topK,
       isCorrect: result.isCorrect,
       recordType: result.recordType,
+      top1Score: result.top1Score,
+      top2Score: result.top2Score,
+      scoreMargin: result.scoreMargin,
+      channelWeights: result.channelWeights,
+      channelDiagnostics: result.channelDiagnostics,
+      matchedCollectionScores: result.matchedCollectionScores,
       croppingMeta: result.croppingMeta,
       timestamp: new Date(result.timestamp).toISOString(),
     })),
