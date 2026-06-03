@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>清空所有数据</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f0f0f0; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { color: #333; }
+        .status { margin: 20px 0; padding: 10px; background: #e3f2fd; border-radius: 4px; }
+        .success { background: #c8e6c9; color: #2e7d32; }
+        .error { background: #ffcdd2; color: #c62828; }
+        button { padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #d32f2f; }
+        .log { background: #f5f5f5; padding: 10px; margin-top: 10px; max-height: 300px; overflow-y: auto; font-size: 12px; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗑️ 永久清空所有数据</h1>
+        <p>这个工具将彻底清空所有数据，包括：</p>
+        <ul>
+            <li>所有IndexedDB数据库</li>
+            <li>所有localStorage缓存</li>
+            <li>所有sessionStorage</li>
+            <li>所有cookies</li>
+        </ul>
+        <button onclick="clearAllData()">点击确认清空所有数据</button>
+        <div id="status"></div>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        const logDiv = document.getElementById('log');
+        
+        function addLog(message) {
+            console.log(message);
+            logDiv.innerHTML += message + '<br/>';
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        async function clearAllData() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = '<div class="status">正在清空数据...</div>';
+            logDiv.innerHTML = '';
+            
+            try {
+                addLog('=== 开始清空所有数据 ===');
+                
+                // 1. 清空所有IndexedDB数据库
+                addLog('');
+                addLog('【步骤1】清空IndexedDB数据库...');
+                const dbs = await indexedDB.databases();
+                addLog('找到的数据库: ' + dbs.map(d => d.name).join(', '));
+                
+                for (const dbInfo of dbs) {
+                    addLog('正在删除数据库: ' + dbInfo.name);
+                    await new Promise((resolve, reject) => {
+                        const request = indexedDB.deleteDatabase(dbInfo.name);
+                        request.onsuccess = () => {
+                            addLog('✓ 数据库已删除: ' + dbInfo.name);
+                            resolve();
+                        };
+                        request.onerror = () => {
+                            addLog('✗ 删除数据库失败: ' + dbInfo.name);
+                            reject(request.error);
+                        };
+                    });
+                }
+                
+                // 2. 清空localStorage - 清空所有键
+                addLog('');
+                addLog('【步骤2】清空localStorage...');
+                const allKeys = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key) {
+                        allKeys.push(key);
+                    }
+                }
+                addLog('找到的localStorage键: ' + allKeys.join(', '));
+                allKeys.forEach(key => {
+                    localStorage.removeItem(key);
+                    addLog('✓ 已删除localStorage键: ' + key);
+                });
+                addLog('localStorage清空完成，剩余键数: ' + localStorage.length);
+                
+                // 特别确保删除app-version，这样应用启动时会认为版本已更新，自动清空数据
+                localStorage.removeItem('app-version');
+                localStorage.removeItem('app-version-updated-at');
+                addLog('✓ 已删除app-version（触发版本检查）');
+                
+                // 3. 清空sessionStorage
+                addLog('');
+                addLog('【步骤3】清空sessionStorage...');
+                sessionStorage.clear();
+                addLog('✓ sessionStorage已清空');
+                
+                // 4. 清空所有cookies
+                addLog('');
+                addLog('【步骤4】清空cookies...');
+                const cookies = document.cookie.split(';');
+                addLog('找到的cookies数: ' + cookies.length);
+                cookies.forEach(c => {
+                    const eqPos = c.indexOf('=');
+                    const name = eqPos > -1 ? c.substr(0, eqPos).trim() : c.trim();
+                    if (name) {
+                        document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;';
+                        addLog('✓ 已删除cookie: ' + name);
+                    }
+                });
+                
+                // 5. 清空IndexedDB缓存（再次确保）
+                addLog('');
+                addLog('【步骤5】再次验证IndexedDB已清空...');
+                const dbsAfter = await indexedDB.databases();
+                addLog('清空后的数据库数: ' + dbsAfter.length);
+                
+                addLog('');
+                addLog('=== 所有数据已永久清空！ ===');
+                statusDiv.innerHTML = '<div class="status success">✅ 所有数据已永久清空！<br/>页面将在3秒后刷新...</div>';
+                
+                setTimeout(() => {
+                    location.reload();
+                }, 3000);
+                
+            } catch (error) {
+                addLog('❌ 清空数据时出错: ' + error.message);
+                console.error('清空数据时出错:', error);
+                statusDiv.innerHTML = '<div class="status error">❌ 清空数据失败: ' + error.message + '</div>';
+            }
+        }
+        
+        // 页面加载时显示数据库信息
+        window.addEventListener('load', async () => {
+            try {
+                addLog('=== 页面加载 - 扫描现有数据 ===');
+                
+                const dbs = await indexedDB.databases();
+                addLog('IndexedDB数据库列表: ' + dbs.map(d => d.name).join(', '));
+                
+                // 检查emg-database
+                const request = indexedDB.open('emg-database', 1);
+                request.onsuccess = () => {
+                    const db = request.result;
+                    const stores = Array.from(db.objectStoreNames);
+                    addLog('emg-database 存储对象: ' + stores.join(', '));
+                    db.close();
+                };
+                
+                // 检查localStorage
+                addLog('localStorage键数: ' + localStorage.length);
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key) {
+                        const value = localStorage.getItem(key);
+                        const size = value ? (value.length / 1024).toFixed(2) : 0;
+                        addLog('  - ' + key + ' (' + size + 'KB)');
+                    }
+                }
+                
+            } catch (error) {
+                addLog('❌ 获取数据库信息失败: ' + error.message);
+                console.error('获取数据库信息失败:', error);
+            }
+        });
+    </script>
+</body>
+</html>
