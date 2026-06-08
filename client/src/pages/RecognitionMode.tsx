@@ -111,6 +111,14 @@ const createRecognitionHistoryId = (): string => {
   return `recognition-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 };
 
+const MIN_RECOGNITION_SAMPLES = 50;
+
+const isValidSerialSample = (data: any): boolean => {
+  return Number.isFinite(data?.channel1) &&
+    Number.isFinite(data?.channel2) &&
+    Number.isFinite(data?.channel3);
+};
+
 export default function RecognitionMode() {
   const [location, navigate] = useLocation();
   const { isConnected, onDataReceived } = useSerialConnectionContext();
@@ -203,6 +211,7 @@ export default function RecognitionMode() {
     ch2: [],
     ch3: [],
   });
+  const lastRecognitionSampleAtRef = useRef<number | null>(null);
 
   // 从 IndexedDB 加载已保存的指令和自适应阈值
   useEffect(() => {
@@ -255,9 +264,15 @@ export default function RecognitionMode() {
   useEffect(() => {
     const handleDataReceived = (data: any) => {
       if (isRecognizing) {
+        if (!isValidSerialSample(data)) {
+          console.warn('[识别] 收到无效串口样本，已忽略:', data);
+          return;
+        }
+
         waveformBufferRef.current.ch1.push(data.channel1);
         waveformBufferRef.current.ch2.push(data.channel2);
         waveformBufferRef.current.ch3.push(data.channel3);
+        lastRecognitionSampleAtRef.current = data.timestamp || Date.now();
 
         // 实时显示（最多显示 3000 个点，约6秒采集时长）
         setCurrentWaveform((prev) => ({
@@ -384,8 +399,12 @@ export default function RecognitionMode() {
 
     setIsRecognizing(true);
     setError(null);
+    setShowFeedback(false);
+    setLastRecognitionResult(null);
+    setSelectedTrueCommand('');
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
     waveformBufferRef.current = { ch1: [], ch2: [], ch3: [] };
+    lastRecognitionSampleAtRef.current = null;
     setRecognitionTime(0);
     setShowElectrodeCheck(false);
     setElectrodeCheckResult(null);
@@ -404,8 +423,30 @@ export default function RecognitionMode() {
 
     setIsRecognizing(false);
 
+    const sampleCount = waveformBufferRef.current.ch1.length;
+    console.log(`[识别] 停止识别，采集到 ${sampleCount} 个有效样本`);
+
+    if (sampleCount < MIN_RECOGNITION_SAMPLES) {
+      const lastSampleText = lastRecognitionSampleAtRef.current
+        ? `最后样本时间: ${new Date(lastRecognitionSampleAtRef.current).toLocaleTimeString()}`
+        : '未收到任何有效串口样本';
+      const errorMsg = `未采集到足够有效信号（${sampleCount}/${MIN_RECOGNITION_SAMPLES}），请确认设备仍在输出数据后重试。${lastSampleText}`;
+      console.warn('[识别]', errorMsg);
+      setError(errorMsg);
+      setShowFeedback(false);
+      setLastRecognitionResult(null);
+      addRecognitionHistoryRecord({
+        timestamp: new Date(),
+        command: '无法识别',
+        confidence: 0,
+        allScores: [],
+        processingStatus: errorMsg,
+      });
+      return;
+    }
+
     // 识别
-    if (waveformBufferRef.current.ch1.length > 0) {
+    if (sampleCount > 0) {
       let result: RecognitionResult;
 
       // 使用与采集相同的处理流程：空白裁剪 + 缩放到统一长度
