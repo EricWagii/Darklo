@@ -37,6 +37,7 @@ import { FIXED_WAVEFORM_LENGTH } from '@shared/instruction-length-spec';
 import { showRecognitionCroppingToast } from '@/lib/cropping-completion-toast';
 
 interface RecognitionResult {
+  historyId?: string;
   timestamp: Date;
   command: string;
   confidence: number;
@@ -104,6 +105,10 @@ const medianScore = (scores: number[]): number => {
     return (sorted[middle - 1] + sorted[middle]) / 2;
   }
   return sorted[middle];
+};
+
+const createRecognitionHistoryId = (): string => {
+  return `recognition-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 };
 
 export default function RecognitionMode() {
@@ -330,6 +335,14 @@ export default function RecognitionMode() {
     return Math.max(0, 100 - (euclideanDist / 10) * 100);
   };
 
+  const addRecognitionHistoryRecord = (record: RecognitionResult) => {
+    const recordWithId: RecognitionResult = {
+      ...record,
+      historyId: record.historyId || createRecognitionHistoryId(),
+    };
+    setRecognitionHistory(prevHistory => [recordWithId, ...prevHistory].slice(0, 50));
+  };
+
   // 开始识别
   // 检查电极状态
   const handleCheckElectrode = async () => {
@@ -421,13 +434,13 @@ export default function RecognitionMode() {
         const errorMsg = `信号质量不达标: ${croppingMeta.reason}，请重新测试`;
         console.warn(errorMsg);
         setError(errorMsg);
-        setRecognitionHistory([...recognitionHistory, {
+        addRecognitionHistoryRecord({
           timestamp: new Date(),
           command: '无法识别',
           confidence: 0,
           allScores: [],
           processingStatus: processedWaveform.meta.croppingMeta.stage,
-        }]);
+        });
         return;
       }
 
@@ -462,13 +475,13 @@ export default function RecognitionMode() {
           };
         } else {
           setError(cnnResult.message);
-          setRecognitionHistory([...recognitionHistory, {
+          addRecognitionHistoryRecord({
             timestamp: new Date(),
             command: '无法识别',
             confidence: 0,
             allScores: [],
             processingStatus: 'CNN模型识别失败',
-          }]);
+          });
           return;
         }
       } else {
@@ -660,6 +673,9 @@ export default function RecognitionMode() {
       // 只有当识别成功且置信度足够高时才显示反馈
       const isRecognitionSuccess = !isUncertainRecognition(result.command);
       setShowFeedback(isRecognitionSuccess);
+      if (!isRecognitionSuccess) {
+        addRecognitionHistoryRecord(result);
+      }
       setSelectedTrueCommand('');
       setError(null);
       setCurrentWaveform(normalizedWaveform);  // 显示裁剪后的波形
@@ -744,21 +760,9 @@ export default function RecognitionMode() {
         timestamp: new Date(),
       };
       
-      // ✅ 修复：替换最后一条预测结果，而不是新增
-      // 如果历史记录中已有最近的预测结果，替换它
-      // 否则新增反馈记录
-      setRecognitionHistory(prevHistory => {
-        // 检查是否有未反馈的预测结果
-        if (prevHistory.length > 0 && !prevHistory[prevHistory.length - 1].isCorrect && !prevHistory[prevHistory.length - 1].userCorrection) {
-          // 替换最后一条预测结果
-          const updated = [...prevHistory];
-          updated[updated.length - 1] = historyRecord as any;
-          return updated;
-        } else {
-          // 新增反馈记录
-          return [historyRecord as any, ...prevHistory];
-        }
-      })
+      // 反馈记录始终新增到历史顶部。成功预测不会预先写入历史，
+      // 因此这里不再替换最后一条记录，避免覆盖失败/不确定结果。
+      addRecognitionHistoryRecord(historyRecord as RecognitionResult);
       
       // 8. 保存识别结果到独立的识别记录表（仅在用户反馈后保存）
       try {
@@ -1231,15 +1235,21 @@ export default function RecognitionMode() {
               <Divider />
               <SectionLabel number="03">RECOGNITION HISTORY</SectionLabel>
               <SectionTitle>识别历史</SectionTitle>
+              <div style={{ color: '#888', fontSize: '12px', marginBottom: '12px' }}>
+                显示最近 {Math.min(10, recognitionHistory.length)} / {recognitionHistory.length} 条
+              </div>
 
               <div style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
                 gap: '16px',
+                maxHeight: '720px',
+                overflowY: 'auto',
+                paddingRight: '8px',
               }}>
                 {recognitionHistory.slice(0, 10).map((result, idx) => (
                   <div
-                    key={idx}
+                    key={result.historyId || `${result.timestamp instanceof Date ? result.timestamp.getTime() : result.timestamp}-${result.command}-${idx}`}
                     style={{
                       backgroundColor: '#1a1a1a',
                       border: '1px solid #333',
@@ -1249,7 +1259,7 @@ export default function RecognitionMode() {
                   >
                     <div style={{ marginBottom: '12px' }}>
                       <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>
-                        #{idx + 1} · {result.timestamp.toLocaleTimeString()}
+                        #{idx + 1} · {(result.timestamp instanceof Date ? result.timestamp : new Date(result.timestamp)).toLocaleTimeString()}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                         <div style={{ fontSize: '20px', color: '#d4af37', fontWeight: 'bold' }}>
