@@ -129,6 +129,36 @@ interface StoredCommand {
   createdAt: Date;
 }
 
+const buildQualityScoresForHistory = (history: CollectionData[]) => {
+  if (history.length === 0) {
+    return [];
+  }
+
+  return evaluateAllCollectionsImproved(
+    history.map((col) => col.waveform)
+  ).map((score, idx) => ({
+    ...score,
+    id: history[idx].id,
+    index: idx,
+  }));
+};
+
+const getDynamicQualityColor = (score: number): string => {
+  if (score >= 80) return '#4ade80';
+  if (score >= 70) return '#86efac';
+  if (score >= 60) return '#fbbf24';
+  if (score >= 50) return '#fb923c';
+  return '#ef4444';
+};
+
+const getDynamicQualityLabel = (score: number): string => {
+  if (score >= 80) return '优秀';
+  if (score >= 70) return '良好';
+  if (score >= 60) return '一般';
+  if (score >= 50) return '较差';
+  return '很差';
+};
+
 export default function CollectionMode() {
   const [location, navigate] = useLocation();
   const { isConnected, onDataReceived } = useSerialConnectionContext();
@@ -228,15 +258,7 @@ export default function CollectionMode() {
 
     if (collectionHistory.length >= 1) {
       try {
-        const scores = evaluateAllCollectionsImproved(
-          collectionHistory.map((col) => col.waveform)
-        );
-        const scoresWithIndex = scores.map((score, idx) => ({
-          ...score,
-          id: collectionHistory[idx].id,  // 问题3.1修复：添加UUID
-          index: idx,
-        }));
-        setQualityScores(scoresWithIndex);
+        setQualityScores(buildQualityScoresForHistory(collectionHistory));
       } catch (err) {
         console.error('质量评分计算失败:', err);
       }
@@ -256,6 +278,7 @@ export default function CollectionMode() {
       }));
     setCollectionHistory(newHistory);
     setCollectionCount(newHistory.length);
+    setQualityScores(buildQualityScoresForHistory(newHistory));
     const collectionIndex = deletedCollection ? deletedDisplayIndex : '?';
     toast.success(`已削除采集 #${collectionIndex}`);
   };
@@ -942,6 +965,10 @@ export default function CollectionMode() {
                 const statusLabel = col.croppingMeta?.stage === 'primary' ? '已裁剪/已缩放' : col.croppingMeta?.stage === 'fallback' ? '已裁剪/已缩放(降级)' : '使用全段';
                 const statusColor = col.croppingMeta?.stage === 'primary' ? '#10b981' : col.croppingMeta?.stage === 'fallback' ? '#f59e0b' : '#ef4444';
                 const confidencePercent = col.croppingMeta ? (col.croppingMeta.confidence * 100).toFixed(0) : 'N/A';
+                const dynamicQualityScore = qualityScores.find((score) => score.id === col.id);
+                const dynamicQualityColor = dynamicQualityScore
+                  ? getDynamicQualityColor(dynamicQualityScore.overallScore)
+                  : '#888';
                 
                 return (
                   <div key={col.id} style={{
@@ -954,19 +981,40 @@ export default function CollectionMode() {
                       <div style={{ fontSize: '12px', color: '#d4af37', fontWeight: 'bold' }}>
                         采集 #{displayIndex} - {col.duration}s
                       </div>
-                      <div style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        padding: '4px 8px',
-                        backgroundColor: statusColor + '20',
-                        border: '1px solid ' + statusColor,
-                        borderRadius: '3px',
-                        fontSize: '11px'
-                      }}>
-                        <span>{statusIcon}</span>
-                        <span style={{ color: statusColor, fontWeight: 'bold' }}>{statusLabel}</span>
-                        <span style={{ color: '#999', marginLeft: '4px' }}>置信度: {confidencePercent}%</span>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {dynamicQualityScore && (
+                          <div style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            padding: '4px 8px',
+                            backgroundColor: dynamicQualityColor + '20',
+                            border: '1px solid ' + dynamicQualityColor,
+                            borderRadius: '3px',
+                            fontSize: '11px'
+                          }}>
+                            <span style={{ color: dynamicQualityColor, fontWeight: 'bold' }}>
+                              质量 {dynamicQualityScore.overallScore}
+                            </span>
+                            <span style={{ color: '#aaa' }}>
+                              {getDynamicQualityLabel(dynamicQualityScore.overallScore)}
+                            </span>
+                          </div>
+                        )}
+                        <div style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '4px 8px',
+                          backgroundColor: statusColor + '20',
+                          border: '1px solid ' + statusColor,
+                          borderRadius: '3px',
+                          fontSize: '11px'
+                        }}>
+                          <span>{statusIcon}</span>
+                          <span style={{ color: statusColor, fontWeight: 'bold' }}>{statusLabel}</span>
+                          <span style={{ color: '#999', marginLeft: '4px' }}>裁剪置信度: {confidencePercent}%</span>
+                        </div>
                       </div>
                     </div>
                     <div style={{ height: '120px', backgroundColor: '#1a1a1a', borderRadius: '4px', padding: '8px' }}>
