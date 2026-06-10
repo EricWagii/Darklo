@@ -57,6 +57,7 @@ import { detectElectrodeStatus, isElectrodeStatusAcceptable } from '@/lib/electr
 import { normalizeWaveformLengthMultiChannel } from '@/lib/waveform-normalizer';
 import { showCollectionCroppingToast } from '@/lib/cropping-completion-toast';
 import { ElectrodeDetectionPanel } from '@/components/ElectrodeDetectionPanel';
+import { RestingBaselineQuickPanel } from '@/components/RestingBaselineQuickPanel';
 import { WaveformComparisonPanel } from '@/components/WaveformComparisonPanel';
 import { AnomalyPromptDialog, type AnomalyWaveform } from '@/components/AnomalyPromptDialog';
 import { toast } from 'sonner';
@@ -819,6 +820,8 @@ export default function CollectionMode() {
         <div style={{ marginBottom: '32px' }}>
           <HardwareStatusComponent />
         </div>
+
+        <RestingBaselineQuickPanel contextLabel="采集训练" />
 
         {/* 指令名称输入 */}
         <div style={{ marginBottom: '24px' }}>

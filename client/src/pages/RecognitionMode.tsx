@@ -26,6 +26,7 @@ import { extractFullFeatures, normalizeFeatures } from '@/lib/dsp-processor';
 import { adaptiveThresholdManager } from '@/lib/multi-channel-fusion';
 import { detectElectrodeStatus, isElectrodeStatusAcceptable, calculateSignalStats } from '@/lib/electrode-detection';
 import { ElectrodeDetectionPanel } from '@/components/ElectrodeDetectionPanel';
+import { RestingBaselineQuickPanel } from '@/components/RestingBaselineQuickPanel';
 import { cnnModelManager, CommandTrainingData } from '@/lib/cnn-model-manager';
 import { processRecognitionFeedback, getCalibrationRecords } from '@/lib/auto-calibration-system';
 import { calculateCollectionQuality, calculateQualityWeightedSimilarity } from '@/lib/collection-quality-scoring';
@@ -1010,6 +1011,7 @@ export default function RecognitionMode() {
           <SectionLabel number="00">HARDWARE CONNECTION</SectionLabel>
           <SectionTitle>硬件连接</SectionTitle>
           <HardwareStatusComponent />
+          <RestingBaselineQuickPanel contextLabel="默念测试" />
 
           <Divider />
 
