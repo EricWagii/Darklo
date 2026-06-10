@@ -251,6 +251,47 @@ export default function CollectionMode() {
       .catch((error) => console.error('[CollectionMode] 加载静息基线失败:', error));
   }, []);
 
+  useEffect(() => {
+    const refreshCurrentCommandState = async () => {
+      if (!commandName.trim()) {
+        setCommandExists(false);
+        return;
+      }
+
+      const cmd = await emgDatabase.getCommand(commandName.trim());
+      setCommandExists(Boolean(cmd));
+    };
+
+    const unsubscribe = dataChangeEventManager.onAny((event) => {
+      if (event.source === 'CollectionMode') return;
+
+      if (event.type === DataChangeEventType.ALL_DATA_CLEARED) {
+        setCollectionHistory([]);
+        setCollectionCount(0);
+        setQualityScores([]);
+        setPendingCollections([]);
+        setGlobalElectrodeBaseline(null);
+        setCommandExists(false);
+        setShowConfirm(false);
+        setShowAnomalyDialog(false);
+        setError('训练和识别运行数据已清空，请重新采集静息基线和训练样本');
+        return;
+      }
+
+      if (
+        event.type === DataChangeEventType.COLLECTION_DELETED ||
+        event.type === DataChangeEventType.COMMAND_DELETED ||
+        event.type === DataChangeEventType.COMMAND_SAVED
+      ) {
+        refreshCurrentCommandState().catch((error) => {
+          console.error('[CollectionMode] 刷新指令状态失败:', error);
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [commandName]);
+
   // ✅ 修复：完全移除内存缓存，不再维护savedCommands
   // 每次需要查询指令时直接从IndexedDB查询，确保任何时刻都是最新数据
 
@@ -1271,6 +1312,7 @@ export default function CollectionMode() {
       logger.log(`保存成功: ${collectionsWithUser.length} 条采集`);
       toast.dismiss();
       toast.success(`保存成功！已保存 ${collectionsWithUser.length} 条采集数据`);
+      dataChangeEventManager.emitCommandSaved(commandName, 'CollectionMode');
       
       // 重置状态，清空采集历史
       setCollectionHistory([]);

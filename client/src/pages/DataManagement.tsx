@@ -82,6 +82,7 @@ export default function DataManagement() {
   const [allUsers, setAllUsers] = useState<Array<{userId: string; userName: string}>>([]);  // 所有用户列表
   const [lengthStats, setLengthStats] = useState<Map<string, LengthDistributionStats>>(new Map());  // 长度分布统计
   const [selectedCommandForStats, setSelectedCommandForStats] = useState<string | null>(null);  // 选中的指令用于显示统计
+  const [isClearingData, setIsClearingData] = useState(false);
 
   // 检查用户登录状态
   if (!isLoggedIn) {
@@ -661,18 +662,26 @@ export default function DataManagement() {
                 variant="error" 
                 onClick={async () => {
                   if (window.confirm('确定要清除所有采集数据吗？此操作无法撤销。')) {
+                    setIsClearingData(true);
                     try {
                       await emgDatabase.clearAllCommands();
                       setCommandsData([]);
+                      setLengthStats(new Map());
+                      setExpandedCommand(null);
+                      setSelectedCommandForStats(null);
+                      dataChangeEventManager.emitAllDataCleared('DataManagement');
                       toast.success('所有数据已清除');
                     } catch (error) {
                       toast.error('清除数据失败');
                       console.error(error);
+                    } finally {
+                      setIsClearingData(false);
                     }
                   }
                 }}
+                disabled={isClearingData}
               >
-                清除所有数据
+                {isClearingData ? '清除中...' : '清除所有数据'}
               </Button>
             </div>
           </div>

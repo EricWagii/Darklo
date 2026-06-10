@@ -28,6 +28,21 @@ class DataChangeEventManager {
   private listeners: Map<DataChangeEventType, Set<(event: DataChangeEvent) => void>> = new Map();
   private eventHistory: DataChangeEvent[] = [];
   private maxHistorySize = 100;
+  private broadcastKey = 'darklo:data-change-event';
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', (event) => {
+        if (event.key !== this.broadcastKey || !event.newValue) return;
+        try {
+          const parsed = JSON.parse(event.newValue) as DataChangeEvent;
+          this.emit(parsed, false);
+        } catch (error) {
+          console.error('[数据变更事件广播解析失败]', error);
+        }
+      });
+    }
+  }
 
   /**
    * 监听数据变更事件
@@ -61,7 +76,7 @@ class DataChangeEventManager {
   /**
    * 发送数据变更事件
    */
-  emit(event: DataChangeEvent): void {
+  emit(event: DataChangeEvent, broadcast = true): void {
     console.log(`[数据变更事件] ${event.type} - 来自 ${event.source}`, event);
 
     // 记录到历史
@@ -80,6 +95,17 @@ class DataChangeEventManager {
           console.error('[数据变更事件处理错误]', error);
         }
       });
+    }
+
+    if (broadcast && typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(
+          this.broadcastKey,
+          JSON.stringify({ ...event, timestamp: Date.now() })
+        );
+      } catch (error) {
+        console.warn('[数据变更事件广播失败]', error);
+      }
     }
   }
 

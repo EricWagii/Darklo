@@ -38,6 +38,7 @@ import { FIXED_WAVEFORM_LENGTH } from '@shared/instruction-length-spec';
 import { showRecognitionCroppingToast } from '@/lib/cropping-completion-toast';
 import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
+import { dataChangeEventManager, DataChangeEventType } from '@/lib/data-change-events';
 
 interface RecognitionResult {
   historyId?: string;
@@ -318,53 +319,80 @@ export default function RecognitionMode() {
   });
   const lastRecognitionSampleAtRef = useRef<number | null>(null);
 
-  // 从 IndexedDB 加载已保存的指令和自适应阈值
-  useEffect(() => {
-    (async () => {
-      try {
-        const saved = await emgDatabase.getAllCommands();
-        const baseline = await emgDatabase.getCalibration();
-        setGlobalElectrodeBaseline(baseline);
-        if (saved && saved.length > 0) {
-          // 对相同名称的指令进行合并：将所有采集数据合并到一个指令对象下
-          // 这样反馈面板中不会出现重复指令，且保留所有采集数据
-          const commandsMap = new Map<string, any>();
-          saved.forEach((cmd: any) => {
-            if (commandsMap.has(cmd.name)) {
-              // 如果已存在相同名称的指令，合并采集数据
-              const existing = commandsMap.get(cmd.name);
-              existing.collections = [
-                ...existing.collections,
-                ...(cmd.collections || [])
-              ];
-              // 更新createdAt为最早的时间
-              const existingTime = new Date(existing.createdAt).getTime();
-              const newTime = new Date(cmd.createdAt).getTime();
-              if (newTime < existingTime) {
-                existing.createdAt = new Date(cmd.createdAt);
-              }
-            } else {
-              // 新的指令名称，直接添加
-              commandsMap.set(cmd.name, {
-                name: cmd.name,
-                collections: cmd.collections || [],
-                createdAt: new Date(cmd.createdAt),
-              });
+  const loadRecognitionData = async () => {
+    try {
+      const saved = await emgDatabase.getAllCommands();
+      const baseline = await emgDatabase.getCalibration();
+      setGlobalElectrodeBaseline(baseline);
+      if (saved && saved.length > 0) {
+        const commandsMap = new Map<string, any>();
+        saved.forEach((cmd: any) => {
+          if (commandsMap.has(cmd.name)) {
+            const existing = commandsMap.get(cmd.name);
+            existing.collections = [
+              ...existing.collections,
+              ...(cmd.collections || [])
+            ];
+            const existingTime = new Date(existing.createdAt).getTime();
+            const newTime = new Date(cmd.createdAt).getTime();
+            if (newTime < existingTime) {
+              existing.createdAt = new Date(cmd.createdAt);
             }
-          });
-          const commands = Array.from(commandsMap.values());
-          setSavedCommands(commands);
-        }
-      } catch (error) {
-        console.error('加载指令失败:', error);
-        // 不再使用localStorage备用，确保数据一致性
+          } else {
+            commandsMap.set(cmd.name, {
+              name: cmd.name,
+              collections: cmd.collections || [],
+              createdAt: new Date(cmd.createdAt),
+            });
+          }
+        });
+        setSavedCommands(Array.from(commandsMap.values()));
+      } else {
         setSavedCommands([]);
       }
-    })();
+    } catch (error) {
+      console.error('加载指令失败:', error);
+      setSavedCommands([]);
+      setGlobalElectrodeBaseline(null);
+    }
+  };
+
+  // 从 IndexedDB 加载已保存的指令和自适应阈值
+  useEffect(() => {
+    loadRecognitionData();
     
     // 加载自适应阈值
     adaptiveThresholdManager.loadFromStorage();
     setAdaptiveThreshold(adaptiveThresholdManager.getThreshold());
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = dataChangeEventManager.onAny((event) => {
+      if (event.source === 'RecognitionMode') return;
+
+      if (event.type === DataChangeEventType.ALL_DATA_CLEARED) {
+        setSavedCommands([]);
+        setGlobalElectrodeBaseline(null);
+        setRecognitionHistory([]);
+        setShowFeedback(false);
+        setLastRecognitionResult(null);
+        setSelectedTrueCommand('');
+        adaptiveThresholdManager.clearHistory();
+        setAdaptiveThreshold(adaptiveThresholdManager.getThreshold());
+        setError('训练和识别运行数据已清空，请重新采集静息基线和训练样本');
+        return;
+      }
+
+      if (
+        event.type === DataChangeEventType.COLLECTION_DELETED ||
+        event.type === DataChangeEventType.COMMAND_DELETED ||
+        event.type === DataChangeEventType.COMMAND_SAVED
+      ) {
+        loadRecognitionData();
+      }
+    });
+
+    return unsubscribe;
   }, []);
 
   // 注册数据接收回调
