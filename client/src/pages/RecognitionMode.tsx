@@ -127,15 +127,10 @@ const isValidSerialSample = (data: any): boolean => {
     Number.isFinite(data?.channel3);
 };
 
-const getRestingBaselineVersion = (baseline: any): string | undefined => {
-  return typeof baseline?.capturedAt === 'string' ? baseline.capturedAt : undefined;
-};
-
-const isCollectionCompatibleWithBaseline = (collection: StoredCommand['collections'][number], baselineVersion?: string): boolean => {
+const isCollectionPreprocessedWithRestingBaseline = (collection: StoredCommand['collections'][number]): boolean => {
   return Boolean(
-    baselineVersion &&
     collection.preprocessingMeta?.pipelineVersion === 'resting-baseline-v1' &&
-    collection.preprocessingMeta?.restingBaselineCapturedAt === baselineVersion
+    collection.preprocessingMeta?.requiresRestingBaseline
   );
 };
 
@@ -506,12 +501,11 @@ export default function RecognitionMode() {
       return;
     }
 
-    const baselineVersion = getRestingBaselineVersion(globalElectrodeBaseline);
-    const hasCompatibleTrainingData = savedCommands.some((cmd) =>
-      cmd.collections.some((collection) => isCollectionCompatibleWithBaseline(collection, baselineVersion))
+    const hasRestingPreprocessedTrainingData = savedCommands.some((cmd) =>
+      cmd.collections.some((collection) => isCollectionPreprocessedWithRestingBaseline(collection))
     );
-    if (!hasCompatibleTrainingData) {
-      setError('当前静息基线下没有可用训练样本。请在采集训练页重新采集并保存指令数据');
+    if (!hasRestingPreprocessedTrainingData) {
+      setError('没有可用的静息基线预处理训练样本。请在采集训练页重新采集并保存指令数据');
       return;
     }
 
@@ -585,18 +579,17 @@ export default function RecognitionMode() {
         });
         return;
       }
-      const baselineVersion = getRestingBaselineVersion(globalElectrodeBaseline);
       const compatibleCommands = savedCommands
         .map((cmd) => ({
           ...cmd,
           collections: cmd.collections.filter((collection) =>
-            isCollectionCompatibleWithBaseline(collection, baselineVersion)
+            isCollectionPreprocessedWithRestingBaseline(collection)
           ),
         }))
         .filter((cmd) => cmd.collections.length > 0);
 
       if (compatibleCommands.length === 0) {
-        const errorMsg = '当前静息基线下没有可用训练样本。请重新采集训练数据后再测试';
+        const errorMsg = '没有可用的静息基线预处理训练样本。请重新采集训练数据后再测试';
         setError(errorMsg);
         addRecognitionHistoryRecord({
           timestamp: new Date(),
