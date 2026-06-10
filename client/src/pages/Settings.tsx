@@ -126,7 +126,7 @@ export default function Settings() {
       setIsLoading(true);
       await emgDatabase.clearAllTrainingData();
       setTrainingCount(0);
-      setSuccess('所有数据已清空');
+      setSuccess('训练、识别和诊断运行数据已清空');
     } catch (err) {
       const message = err instanceof Error ? err.message : '清空失败';
       setError(message);
@@ -271,10 +271,10 @@ export default function Settings() {
 
           <Button
             onClick={handleClearAllData}
-            disabled={isLoading || trainingCount === 0}
+            disabled={isLoading}
             className="bg-red-600 hover:bg-red-700 text-white"
           >
-            清空所有训练数据
+            清空训练/识别运行数据
           </Button>
         </Card>
 

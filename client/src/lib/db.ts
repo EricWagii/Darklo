@@ -328,7 +328,7 @@ export class EMGDatabase {
       updatedAt: Date.now(),
     };
 
-    return new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const transaction = this.db!.transaction(
         [DB_CONFIG.STORES.COMMANDS],
         'readwrite'
@@ -346,6 +346,8 @@ export class EMGDatabase {
         reject(new Error(`保存指令失败: ${request.error?.message || '未知错误'}`));
       };
     });
+
+    await this.clearDerivedRecognitionState('saveCommand');
   }
 
   /**
@@ -498,7 +500,9 @@ export class EMGDatabase {
             reject(new Error(`删除失败：指令仍然存在`));
           } else {
             console.log(`[deleteCommand] ✅ 删除验证成功！指令 "${commandName}" 已完全删除`);
-            resolve();
+            this.clearDerivedRecognitionState('deleteCommand')
+              .then(resolve)
+              .catch(reject);
           }
         };
         
@@ -626,7 +630,9 @@ export class EMGDatabase {
             
             transaction.oncomplete = () => {
               console.log(`[deleteCollection] 采集已删除，同名 command 已合并: ${collectionId}`);
-              resolve();
+              this.clearDerivedRecognitionState('deleteCollection')
+                .then(resolve)
+                .catch(reject);
             };
             
             transaction.onerror = () => {
@@ -674,7 +680,9 @@ export class EMGDatabase {
 
         transaction.oncomplete = () => {
           console.log(`[deleteCollection] 采集已删除: ${collectionId}`);
-          resolve();
+          this.clearDerivedRecognitionState('deleteCollection')
+            .then(resolve)
+            .catch(reject);
         };
 
         transaction.onerror = () => {
@@ -1147,6 +1155,127 @@ export class EMGDatabase {
   }
 
   /**
+   * 清除所有会影响训练、识别和诊断的运行数据。
+   * 保留用户账号、审计日志和系统版本，避免清空后无法登录或丢失操作记录。
+   */
+  async clearAllRuntimeData(): Promise<void> {
+    if (!this.db) {
+      throw new Error('数据库未初始化');
+    }
+
+    const storesToClear = [
+      DB_CONFIG.STORES.COMMANDS,
+      DB_CONFIG.STORES.RECOGNITION_RECORDS,
+      DB_CONFIG.STORES.FEEDBACK_DATA,
+      DB_CONFIG.STORES.CALIBRATION_DATA,
+      DB_CONFIG.STORES.CNN_MODEL,
+      DB_CONFIG.STORES.CNN_MODELS,
+      DB_CONFIG.STORES.CNN_STATE,
+      DB_CONFIG.STORES.COMMAND_TEMPLATES,
+      DB_CONFIG.STORES.TRAINING_DATA,
+      DB_CONFIG.STORES.SESSIONS,
+      DB_CONFIG.STORES.MULTI_CHANNEL_FUSION,
+      DB_CONFIG.STORES.ADAPTIVE_THRESHOLDS,
+    ];
+
+    await new Promise<void>((resolve, reject) => {
+      const transaction = this.db!.transaction(storesToClear, 'readwrite');
+
+      try {
+        for (const storeName of storesToClear) {
+          transaction.objectStore(storeName).clear();
+        }
+      } catch (error) {
+        reject(new Error(`清除运行数据异常: ${error instanceof Error ? error.message : '未知错误'}`));
+        return;
+      }
+
+      transaction.oncomplete = () => {
+        console.log('[clearAllRuntimeData] 训练、识别和诊断运行数据已清除');
+        resolve();
+      };
+
+      transaction.onerror = () => {
+        console.error('[clearAllRuntimeData] 清除失败:', transaction.error);
+        reject(new Error(`清除运行数据失败: ${transaction.error?.message || '未知错误'}`));
+      };
+    });
+
+    await this.verifyStoresEmpty(storesToClear, 'clearAllRuntimeData');
+  }
+
+  private async clearDerivedRecognitionState(label: string): Promise<void> {
+    if (!this.db) {
+      throw new Error('数据库未初始化');
+    }
+
+    const storesToClear = [
+      DB_CONFIG.STORES.CNN_MODEL,
+      DB_CONFIG.STORES.CNN_MODELS,
+      DB_CONFIG.STORES.CNN_STATE,
+      DB_CONFIG.STORES.MULTI_CHANNEL_FUSION,
+      DB_CONFIG.STORES.ADAPTIVE_THRESHOLDS,
+    ];
+
+    await new Promise<void>((resolve, reject) => {
+      const transaction = this.db!.transaction(storesToClear, 'readwrite');
+
+      try {
+        for (const storeName of storesToClear) {
+          transaction.objectStore(storeName).clear();
+        }
+      } catch (error) {
+        reject(new Error(`[${label}] 清除派生识别状态异常: ${error instanceof Error ? error.message : '未知错误'}`));
+        return;
+      }
+
+      transaction.oncomplete = () => {
+        console.log(`[${label}] 派生识别状态已失效`);
+        resolve();
+      };
+
+      transaction.onerror = () => {
+        reject(new Error(`[${label}] 清除派生识别状态失败: ${transaction.error?.message || '未知错误'}`));
+      };
+    });
+  }
+
+  private async verifyStoresEmpty(storeNames: string[], label: string): Promise<void> {
+    if (!this.db) {
+      throw new Error('数据库未初始化');
+    }
+
+    const counts = await new Promise<Record<string, number>>((resolve, reject) => {
+      const transaction = this.db!.transaction(storeNames, 'readonly');
+      const result: Record<string, number> = {};
+
+      for (const storeName of storeNames) {
+        const request = transaction.objectStore(storeName).count();
+        request.onsuccess = () => {
+          result[storeName] = request.result;
+        };
+        request.onerror = () => {
+          reject(new Error(`[${label}] 验证 ${storeName} 失败: ${request.error?.message || '未知错误'}`));
+        };
+      }
+
+      transaction.oncomplete = () => {
+        resolve(result);
+      };
+
+      transaction.onerror = () => {
+        reject(new Error(`[${label}] 验证事务失败: ${transaction.error?.message || '未知错误'}`));
+      };
+    });
+
+    const leftovers = Object.entries(counts).filter(([, count]) => count > 0);
+    if (leftovers.length > 0) {
+      const detail = leftovers.map(([storeName, count]) => `${storeName}: ${count}`).join(', ');
+      throw new Error(`[${label}] 删除验证失败，仍有后台残留: ${detail}`);
+    }
+  }
+
+  /**
    * 获取数据库实例
    */
   getDb(): IDBDatabase | null {
@@ -1337,27 +1466,7 @@ export class EMGDatabase {
    * 清除所有训练数据
    */
   async clearAllTrainingData(): Promise<void> {
-    if (!this.db) {
-      throw new Error('数据库未初始化');
-    }
-
-    return new Promise((resolve, reject) => {
-      const transaction = this.db!.transaction(
-        [DB_CONFIG.STORES.COMMANDS],
-        'readwrite'
-      );
-      const store = transaction.objectStore(DB_CONFIG.STORES.COMMANDS);
-      const request = store.clear();
-
-      request.onsuccess = () => {
-        console.log('[clearAllTrainingData] 所有训练数据已清除');
-        resolve();
-      };
-
-      request.onerror = () => {
-        reject(new Error(`清除训练数据失败: ${request.error?.message || '未知错误'}`));
-      };
-    });
+    return this.clearAllRuntimeData();
   }
 
   /**
@@ -1418,41 +1527,7 @@ export class EMGDatabase {
    * 清除所有指令
    */
   async clearAllCommands(): Promise<void> {
-    if (!this.db) {
-      throw new Error('数据库未初始化');
-    }
-
-    // ✅ Phase 7：级联清理所有相关数据
-    return new Promise((resolve, reject) => {
-      const transaction = this.db!.transaction(
-        [
-          DB_CONFIG.STORES.COMMANDS,
-          DB_CONFIG.STORES.RECOGNITION_RECORDS,
-          DB_CONFIG.STORES.FEEDBACK_DATA,
-          DB_CONFIG.STORES.CALIBRATION_DATA,
-        ],
-        'readwrite'
-      );
-
-      try {
-        // 清除所有 stores
-        transaction.objectStore(DB_CONFIG.STORES.COMMANDS).clear();
-        transaction.objectStore(DB_CONFIG.STORES.RECOGNITION_RECORDS).clear();
-        transaction.objectStore(DB_CONFIG.STORES.FEEDBACK_DATA).clear();
-        transaction.objectStore(DB_CONFIG.STORES.CALIBRATION_DATA).clear();
-
-        transaction.oncomplete = () => {
-          console.log('[clearAllCommands] 所有指令及相关数据已完全清除');
-          resolve();
-        };
-
-        transaction.onerror = () => {
-          reject(new Error(`清除数据失败: ${transaction.error?.message || '未知错误'}`));
-        };
-      } catch (error) {
-        reject(new Error(`清除指令异常: ${error instanceof Error ? error.message : '未知错误'}`));
-      }
-    });
+    return this.clearAllRuntimeData();
   }
 
 }

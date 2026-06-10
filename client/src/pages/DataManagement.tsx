@@ -671,7 +671,6 @@ export default function DataManagement() {
                     }
                   }
                 }}
-                disabled={commandsData.length === 0}
               >
                 清除所有数据
               </Button>

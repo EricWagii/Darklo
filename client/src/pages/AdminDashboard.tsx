@@ -150,23 +150,26 @@ export default function AdminDashboard() {
   };
 
   // 删除所有数据
-  const handleClearAllData = () => {
+  const handleClearAllData = async () => {
     if (confirm('确认清空所有采集数据？此操作不可撤销！')) {
-      setCommandsData([]);
-      setUsers([]);
-      // ✅ 修复：使用 clearAllData 清空所有 stores，不仅仅是 COMMANDS 和 TRAINING_DATA
-      emgDatabase.clearAllData();
-      // ✅ 修改20：发送ALL_DATA_CLEARED事件
-      dataChangeEventManager.emitAllDataCleared('AdminDashboard');
-      
-      // 记录清空数据事件
-      if (currentUser) {
-        logAuditEvent(
-          AuditEventType.ADMIN_CLEAR_ALL_DATA,
-          { action: 'clear_all_data' },
-          currentUser.userId.toString(),
-          currentUser.userName
-        );
+      try {
+        await emgDatabase.clearAllRuntimeData();
+        setCommandsData([]);
+        // ✅ 修改20：发送ALL_DATA_CLEARED事件
+        dataChangeEventManager.emitAllDataCleared('AdminDashboard');
+
+        // 记录清空数据事件
+        if (currentUser) {
+          logAuditEvent(
+            AuditEventType.ADMIN_CLEAR_ALL_DATA,
+            { action: 'clear_all_runtime_data' },
+            currentUser.userId.toString(),
+            currentUser.userName
+          );
+        }
+      } catch (error) {
+        console.error('清空运行数据失败:', error);
+        alert(`清空失败: ${error instanceof Error ? error.message : '未知错误'}`);
       }
     }
   };
@@ -345,7 +348,6 @@ export default function AdminDashboard() {
                 <Button
                   variant="error"
                   onClick={handleClearAllData}
-                  disabled={commandsData.length === 0}
                 >
                   🗑️ 清空所有数据
                 </Button>
