@@ -124,6 +124,11 @@ interface CollectionData {
       targetLength: number;
     };
   };
+  preprocessingMeta?: {
+    pipelineVersion: 'resting-baseline-v1';
+    restingBaselineCapturedAt?: string;
+    requiresRestingBaseline: true;
+  };
 }
 
 interface StoredCommand {
@@ -435,6 +440,11 @@ export default function CollectionMode() {
       return;
     }
 
+    if (!getRestingBaselineWaveform(globalElectrodeBaseline)) {
+      setError('请先采集静息基线，再开始采集训练');
+      return;
+    }
+
     // 检查电极状态
     if (electrodeCheckResult && !isElectrodeStatusAcceptable(electrodeCheckResult)) {
       setError('电极状态不符合要求，请先调节电极');
@@ -480,11 +490,17 @@ export default function CollectionMode() {
       return;
     }
 
+    const restingBaseline = getRestingBaselineWaveform(globalElectrodeBaseline);
+    if (!restingBaseline) {
+      setError('缺少静息基线，本次采集未处理。请先采集静息基线后重试');
+      return;
+    }
+
     // 执行统一的波形处理流程：滤波降噪 -> 裁剪空白 -> 统一缩放
     const pipelineConfig: WaveformPipelineConfig = {
       targetLength: FIXED_WAVEFORM_LENGTH || 512,
       samplingRate: SAMPLE_RATE || 500,
-      restingBaseline: getRestingBaselineWaveform(globalElectrodeBaseline),
+      restingBaseline,
       highPassCutoff: 20,
       adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
     };
@@ -518,6 +534,11 @@ export default function CollectionMode() {
         reason: getReasonForStage(croppingStage),
       },
       pipelineMetadata: pipelineResult.metadata,
+      preprocessingMeta: {
+        pipelineVersion: 'resting-baseline-v1',
+        restingBaselineCapturedAt: globalElectrodeBaseline?.capturedAt,
+        requiresRestingBaseline: true,
+      },
     };
 
     // 添加详细的波形诊断日志
@@ -821,7 +842,10 @@ export default function CollectionMode() {
           <HardwareStatusComponent />
         </div>
 
-        <RestingBaselineQuickPanel contextLabel="采集训练" />
+        <RestingBaselineQuickPanel
+          contextLabel="采集训练"
+          onBaselineUpdated={setGlobalElectrodeBaseline}
+        />
 
         {/* 指令名称输入 */}
         <div style={{ marginBottom: '24px' }}>
@@ -1200,6 +1224,9 @@ export default function CollectionMode() {
           duration: col.duration,
           quality: 0.8,
           croppingMeta: col.croppingMeta,
+          normalizationMeta: col.normalizationMeta,
+          pipelineMetadata: col.pipelineMetadata,
+          preprocessingMeta: col.preprocessingMeta,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         })));
@@ -1229,6 +1256,9 @@ export default function CollectionMode() {
             duration: col.duration,
             quality: 0.8,
             croppingMeta: col.croppingMeta,
+            normalizationMeta: col.normalizationMeta,
+            pipelineMetadata: col.pipelineMetadata,
+            preprocessingMeta: col.preprocessingMeta,
             createdAt: Date.now(),
             updatedAt: Date.now(),
           })),

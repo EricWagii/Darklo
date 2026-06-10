@@ -6,15 +6,17 @@ import { ElectrodeBaselineCapture } from '@/components/ElectrodeBaselineCapture'
 
 interface RestingBaselineQuickPanelProps {
   contextLabel: string;
+  onBaselineUpdated?: (baseline: any) => void;
 }
 
-export function RestingBaselineQuickPanel({ contextLabel }: RestingBaselineQuickPanelProps) {
+export function RestingBaselineQuickPanel({ contextLabel, onBaselineUpdated }: RestingBaselineQuickPanelProps) {
   const { isConnected } = useSerialConnectionContext();
   const [baselineSummary, setBaselineSummary] = useState('未采集');
 
   const loadBaselineSummary = async () => {
     try {
       const baseline = await emgDatabase.getCalibration();
+      onBaselineUpdated?.(baseline);
       const stats = getRestingBaselineStats(baseline);
       if (!stats) {
         setBaselineSummary('未采集静息基线');

@@ -92,6 +92,11 @@ interface StoredCommand {
       targetLength: number;
       timestamp: number;
     };
+    preprocessingMeta?: {
+      pipelineVersion?: string;
+      restingBaselineCapturedAt?: string;
+      requiresRestingBaseline?: boolean;
+    };
   }>;
   createdAt: Date;
 }
@@ -120,6 +125,18 @@ const isValidSerialSample = (data: any): boolean => {
   return Number.isFinite(data?.channel1) &&
     Number.isFinite(data?.channel2) &&
     Number.isFinite(data?.channel3);
+};
+
+const getRestingBaselineVersion = (baseline: any): string | undefined => {
+  return typeof baseline?.capturedAt === 'string' ? baseline.capturedAt : undefined;
+};
+
+const isCollectionCompatibleWithBaseline = (collection: StoredCommand['collections'][number], baselineVersion?: string): boolean => {
+  return Boolean(
+    baselineVersion &&
+    collection.preprocessingMeta?.pipelineVersion === 'resting-baseline-v1' &&
+    collection.preprocessingMeta?.restingBaselineCapturedAt === baselineVersion
+  );
 };
 
 interface FeatureNormalizer {
@@ -399,9 +416,6 @@ export default function RecognitionMode() {
         const modelLoaded = await cnnModelManager.loadModel();
         if (isMounted) {
           setCNNModelLoaded(modelLoaded);
-          if (modelLoaded) {
-            setUseCNNModel(true);
-          }
         }
       } catch (error) {
         console.error('[RecognitionMode] CNN模型加载失败:', error);
@@ -487,6 +501,20 @@ export default function RecognitionMode() {
       return;
     }
 
+    if (!getRestingBaselineWaveform(globalElectrodeBaseline)) {
+      setError('请先采集静息基线，再开始默念测试');
+      return;
+    }
+
+    const baselineVersion = getRestingBaselineVersion(globalElectrodeBaseline);
+    const hasCompatibleTrainingData = savedCommands.some((cmd) =>
+      cmd.collections.some((collection) => isCollectionCompatibleWithBaseline(collection, baselineVersion))
+    );
+    if (!hasCompatibleTrainingData) {
+      setError('当前静息基线下没有可用训练样本。请在采集训练页重新采集并保存指令数据');
+      return;
+    }
+
     // 检查电极状态
     if (electrodeCheckResult && !isElectrodeStatusAcceptable(electrodeCheckResult)) {
       setError('电极状态不符合要求，请先调节电极');
@@ -544,13 +572,48 @@ export default function RecognitionMode() {
     // 识别
     if (sampleCount > 0) {
       let result: RecognitionResult;
+      const restingBaseline = getRestingBaselineWaveform(globalElectrodeBaseline);
+      if (!restingBaseline) {
+        const errorMsg = '缺少静息基线，本次识别未处理。请先采集静息基线后重试';
+        setError(errorMsg);
+        addRecognitionHistoryRecord({
+          timestamp: new Date(),
+          command: '无法识别',
+          confidence: 0,
+          allScores: [],
+          processingStatus: errorMsg,
+        });
+        return;
+      }
+      const baselineVersion = getRestingBaselineVersion(globalElectrodeBaseline);
+      const compatibleCommands = savedCommands
+        .map((cmd) => ({
+          ...cmd,
+          collections: cmd.collections.filter((collection) =>
+            isCollectionCompatibleWithBaseline(collection, baselineVersion)
+          ),
+        }))
+        .filter((cmd) => cmd.collections.length > 0);
+
+      if (compatibleCommands.length === 0) {
+        const errorMsg = '当前静息基线下没有可用训练样本。请重新采集训练数据后再测试';
+        setError(errorMsg);
+        addRecognitionHistoryRecord({
+          timestamp: new Date(),
+          command: '无法识别',
+          confidence: 0,
+          allScores: [],
+          processingStatus: errorMsg,
+        });
+        return;
+      }
 
       // 使用与采集相同的处理流程：空白裁剪 + 缩放到统一长度
       const processedWaveform = processTestWaveform(
         waveformBufferRef.current.ch1,
         waveformBufferRef.current.ch2,
         waveformBufferRef.current.ch3,
-        getRestingBaselineWaveform(globalElectrodeBaseline)
+        restingBaseline
       );
 
       // 显示处理完成提示
@@ -643,7 +706,7 @@ export default function RecognitionMode() {
         const testCh2 = zscoreNorm([...testFeatures.timeDomain.ch2, ...testFeatures.frequencyDomain.ch2]);
         const testCh3 = zscoreNorm([...testFeatures.timeDomain.ch3, ...testFeatures.frequencyDomain.ch3]);
 
-        const amplitudeReferenceVectors = savedCommands.flatMap((cmd) =>
+        const amplitudeReferenceVectors = compatibleCommands.flatMap((cmd) =>
           cmd.collections.map((collection) => extractAmplitudeFeatureVector(collection.waveform))
         );
         const amplitudeNormalizer = buildFeatureNormalizer(amplitudeReferenceVectors);
@@ -662,7 +725,7 @@ export default function RecognitionMode() {
         let lastChannelSNR = { ch1: 0, ch2: 0, ch3: 0 };
         let lastChannelDiagnostics = { ch1: {}, ch2: {}, ch3: {} };
         
-        for (const cmd of savedCommands) {
+        for (const cmd of compatibleCommands) {
           // ✅ 修复5：收集所有样本的相似度分数，用于计算top-k均值
           const sampleScores: number[] = [];
           const amplitudeScores: number[] = [];
@@ -1011,7 +1074,10 @@ export default function RecognitionMode() {
           <SectionLabel number="00">HARDWARE CONNECTION</SectionLabel>
           <SectionTitle>硬件连接</SectionTitle>
           <HardwareStatusComponent />
-          <RestingBaselineQuickPanel contextLabel="默念测试" />
+          <RestingBaselineQuickPanel
+            contextLabel="默念测试"
+            onBaselineUpdated={setGlobalElectrodeBaseline}
+          />
 
           <Divider />
 
