@@ -17,13 +17,14 @@ import { processWaveformUnified, WaveformPipelineConfig } from './unified-wavefo
 export function processTestWaveform(
   ch1: number[],
   ch2: number[],
-  ch3: number[]
+  ch3: number[],
+  restingBaseline?: { ch1: number[]; ch2: number[]; ch3: number[] }
 ): ProcessedWaveform {
   // 使用统一的波形处理流程
   const pipelineConfig: WaveformPipelineConfig = {
     targetLength: 512,
     samplingRate: 500,
-    restingBaseline: undefined,
+    restingBaseline,
     highPassCutoff: 20,
     adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
   };
@@ -61,13 +62,14 @@ export function processTestWaveform(
  * 使用统一的波形处理流程：滤波降噪 -> 裁剪空白 -> 统一缩放
  */
 export function processReferenceWaveform(
-  waveform: { ch1: number[]; ch2: number[]; ch3: number[] }
+  waveform: { ch1: number[]; ch2: number[]; ch3: number[] },
+  restingBaseline?: { ch1: number[]; ch2: number[]; ch3: number[] }
 ): ProcessedWaveform {
   // 使用统一的波形处理流程
   const pipelineConfig: WaveformPipelineConfig = {
     targetLength: 512,
     samplingRate: 500,
-    restingBaseline: undefined,
+    restingBaseline,
     highPassCutoff: 20,
     adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
   };

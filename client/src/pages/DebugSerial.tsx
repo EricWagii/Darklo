@@ -109,7 +109,8 @@ export default function DebugSerial() {
       }));
     };
 
-    onDataReceived(handleDataReceived);
+    const unsubscribe = onDataReceived(handleDataReceived);
+    return unsubscribe;
   }, [onDataReceived]);
 
   // 导出为 JSON

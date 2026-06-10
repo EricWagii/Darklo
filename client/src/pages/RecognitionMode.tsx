@@ -35,6 +35,8 @@ import { processTestWaveform, processReferenceWaveform, extractAndFuseFeatures, 
 import { adaptiveFilterMultiChannel } from '@/lib/adaptive-waveform-filtering';
 import { FIXED_WAVEFORM_LENGTH } from '@shared/instruction-length-spec';
 import { showRecognitionCroppingToast } from '@/lib/cropping-completion-toast';
+import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
+import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 
 interface RecognitionResult {
   historyId?: string;
@@ -290,6 +292,11 @@ export default function RecognitionMode() {
   const [selectedTrueCommand, setSelectedTrueCommand] = useState<string>('');
   const [currentUser, setCurrentUser] = useState<any>(null);
 
+  useEffect(() => {
+    setEmgRuntimeBusy('recognition-mode', isRecognizing || showFeedback || showElectrodeCheck);
+    return () => setEmgRuntimeBusy('recognition-mode', false);
+  }, [isRecognizing, showFeedback, showElectrodeCheck]);
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const waveformBufferRef = useRef<{ ch1: number[]; ch2: number[]; ch3: number[] }>({
     ch1: [],
@@ -303,6 +310,8 @@ export default function RecognitionMode() {
     (async () => {
       try {
         const saved = await emgDatabase.getAllCommands();
+        const baseline = await emgDatabase.getCalibration();
+        setGlobalElectrodeBaseline(baseline);
         if (saved && saved.length > 0) {
           // 对相同名称的指令进行合并：将所有采集数据合并到一个指令对象下
           // 这样反馈面板中不会出现重复指令，且保留所有采集数据
@@ -368,7 +377,8 @@ export default function RecognitionMode() {
       }
     };
 
-    onDataReceived(handleDataReceived);
+    const unsubscribe = onDataReceived(handleDataReceived);
+    return unsubscribe;
   }, [isRecognizing, onDataReceived]);
 
   // 自动停止识别（3秒后）
@@ -538,7 +548,8 @@ export default function RecognitionMode() {
       const processedWaveform = processTestWaveform(
         waveformBufferRef.current.ch1,
         waveformBufferRef.current.ch2,
-        waveformBufferRef.current.ch3
+        waveformBufferRef.current.ch3,
+        getRestingBaselineWaveform(globalElectrodeBaseline)
       );
 
       // 显示处理完成提示

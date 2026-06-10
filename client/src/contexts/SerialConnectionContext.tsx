@@ -24,7 +24,7 @@ interface SerialConnectionContextType {
   requestPort: () => Promise<SerialPort>;
   connect: (port?: SerialPort, baudRate?: number) => Promise<void>;
   disconnect: () => Promise<void>;
-  onDataReceived: (callback: (data: SerialData) => void) => void;
+  onDataReceived: (callback: (data: SerialData) => void) => () => void;
   sendData: (data: Uint8Array) => Promise<void>;
 }
 

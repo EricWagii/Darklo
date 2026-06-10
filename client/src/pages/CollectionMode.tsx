@@ -62,6 +62,8 @@ import { AnomalyPromptDialog, type AnomalyWaveform } from '@/components/AnomalyP
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { operationLogger } from '@/lib/operation-logger';
+import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
+import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import {
   handleCompleteCollectionV2,
   handleSaveAfterAnomalyRemoval,
@@ -224,12 +226,24 @@ export default function CollectionMode() {
   const [anomalies, setAnomalies] = useState<AnomalyWaveform[]>([]);
   const [pendingCollections, setPendingCollections] = useState<CollectionData[]>([]);
 
+  useEffect(() => {
+    const busy = isCollecting || countdownTime > 0 || showConfirm || showAnomalyDialog || isSaving;
+    setEmgRuntimeBusy('collection-mode', busy);
+    return () => setEmgRuntimeBusy('collection-mode', false);
+  }, [isCollecting, countdownTime, showConfirm, showAnomalyDialog, isSaving]);
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   // 检查用户登录状态
   useEffect(() => {
     setShowLoginDialog(!isLoggedIn);
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    emgDatabase.getCalibration()
+      .then((baseline) => setGlobalElectrodeBaseline(baseline))
+      .catch((error) => console.error('[CollectionMode] 加载静息基线失败:', error));
+  }, []);
 
   // ✅ 修复：完全移除内存缓存，不再维护savedCommands
   // 每次需要查询指令时直接从IndexedDB查询，确保任何时刻都是最新数据
@@ -363,7 +377,8 @@ export default function CollectionMode() {
       }
     };
 
-    onDataReceived(handleDataReceived);
+    const unsubscribe = onDataReceived(handleDataReceived);
+    return unsubscribe;
   }, [isCollecting, onDataReceived]);
 
   // 检查电极状态
@@ -468,7 +483,7 @@ export default function CollectionMode() {
     const pipelineConfig: WaveformPipelineConfig = {
       targetLength: FIXED_WAVEFORM_LENGTH || 512,
       samplingRate: SAMPLE_RATE || 500,
-      restingBaseline: undefined,
+      restingBaseline: getRestingBaselineWaveform(globalElectrodeBaseline),
       highPassCutoff: 20,
       adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
     };

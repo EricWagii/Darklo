@@ -28,7 +28,7 @@ export function useSerialConnection() {
     error: null,
   });
 
-  const onDataReceivedRef = useRef<((data: SerialData) => void) | null>(null);
+  const dataCallbacksRef = useRef<Set<(data: SerialData) => void>>(new Set());
   const bufferRef = useRef<number[]>([]);
 
   // 检查浏览器是否支持 Web Serial API
@@ -208,10 +208,16 @@ export function useSerialConnection() {
       };
       addDebugLog(`解析成功: CH1=${ch1} CH2=${ch2} CH3=${ch3}`);
 
-      // 调用回调函数
-      if (onDataReceivedRef.current) {
+      // 调用所有数据回调函数
+      if (dataCallbacksRef.current.size > 0) {
         addDebugLog('调用数据回调');
-        onDataReceivedRef.current(data);
+        dataCallbacksRef.current.forEach((callback) => {
+          try {
+            callback(data);
+          } catch (callbackError) {
+            console.error('[Serial] 数据回调执行失败:', callbackError);
+          }
+        });
       } else {
         console.warn('[Serial] 没有注册数据回调');
         addDebugLog('没有注册数据回调', 'warn');
@@ -224,7 +230,10 @@ export function useSerialConnection() {
 
   // 设置数据接收回调
   const onDataReceived = useCallback((callback: (data: SerialData) => void) => {
-    onDataReceivedRef.current = callback;
+    dataCallbacksRef.current.add(callback);
+    return () => {
+      dataCallbacksRef.current.delete(callback);
+    };
   }, []);
 
   // 发送数据到设备

@@ -20,6 +20,7 @@ import DemoMode from "./pages/DemoMode";
 import DebugSerial from "./pages/DebugSerial";
 import AdminDashboard from "./pages/AdminDashboard";
 import AuditLogs from "./pages/AuditLogs";
+import { IdleBaselineNoiseMonitor } from "./components/IdleBaselineNoiseMonitor";
 
 import { ProtectedRoute } from './components/ProtectedRoute';
 import '@/lib/init-admin';
@@ -166,6 +167,7 @@ function App() {
               >
                 <TooltipProvider>
                   <Toaster />
+                  <IdleBaselineNoiseMonitor />
                   <div className="flex flex-col min-h-screen">
                     <div className="flex-1">
                       <Router />

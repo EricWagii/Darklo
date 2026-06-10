@@ -7,13 +7,14 @@
  * - 保存到 IndexedDB（全局）
  */
 
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useSerialConnectionContext } from '@/contexts/SerialConnectionContext';
-import { calculateSignalStats } from '@/lib/electrode-detection';
 import { computeFFT } from '@/lib/fft-analysis';
 import { EnhancedWaveformVisualization } from './EnhancedWaveformVisualization';
 import { emgDatabase } from '@/lib/db';
 import { toast } from 'sonner';
+import { calculateRestingStats } from '@/lib/resting-baseline-utils';
+import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 
 interface ElectrodeBaselineCaptureProps {
   onComplete?: () => void;
@@ -39,6 +40,21 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
   // ✅ 修改18：使用isCapturingRef代替闭包里的isCapturing
   const isCapturingRef = useRef(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const unsubscribeRef = useRef<null | (() => void)>(null);
+
+  useEffect(() => {
+    setEmgRuntimeBusy('baseline-capture', isCapturing);
+    return () => setEmgRuntimeBusy('baseline-capture', false);
+  }, [isCapturing]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+      unsubscribeRef.current?.();
+    };
+  }, []);
 
   // 开始采集基准
   const handleStartCapture = () => {
@@ -52,9 +68,10 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
     setCaptureTime(0);
     waveformBufferRef.current = { ch1: [], ch2: [], ch3: [] };
     setWaveform({ ch1: [], ch2: [], ch3: [] });
+    unsubscribeRef.current?.();
 
     // 注册数据接收回调
-    onDataReceived((data: any) => {
+    unsubscribeRef.current = onDataReceived((data: any) => {
       // ✅ 修改18：使用isCapturingRef而不是闭包里的isCapturing
       if (isCapturingRef.current) {
         waveformBufferRef.current.ch1.push(data.channel1);
@@ -91,15 +108,11 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
 
     setIsCapturing(false);
     isCapturingRef.current = false;
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
 
     // 计算基准特征
     if (waveformBufferRef.current.ch1.length >= 100) {
-      const stats = calculateSignalStats(
-        waveformBufferRef.current.ch1,
-        waveformBufferRef.current.ch2,
-        waveformBufferRef.current.ch3
-      );
-
       // 计算频谱
       let spectrum = { dominantFrequency: 0, snr: 0 };
       try {
@@ -110,16 +123,24 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
       }
 
       // 保存全局基准到 IndexedDB
+      const restingBaseline = {
+        ch1: [...waveformBufferRef.current.ch1],
+        ch2: [...waveformBufferRef.current.ch2],
+        ch3: [...waveformBufferRef.current.ch3],
+      };
+      const restingStats = calculateRestingStats(restingBaseline);
       const baseline = {
-        ch1Mean: stats.ch1Mean,
-        ch1Std: stats.ch1Std,
-        ch2Mean: stats.ch2Mean,
-        ch2Std: stats.ch2Std,
-        ch3Mean: stats.ch3Mean,
-        ch3Std: stats.ch3Std,
+        ch1Mean: restingStats.ch1Mean,
+        ch1Std: restingStats.ch1Std,
+        ch2Mean: restingStats.ch2Mean,
+        ch2Std: restingStats.ch2Std,
+        ch3Mean: restingStats.ch3Mean,
+        ch3Std: restingStats.ch3Std,
         dominantFrequency: spectrum.dominantFrequency,
         snr: spectrum.snr,
-        capturedAt: new Date().toISOString(),
+        capturedAt: restingStats.capturedAt,
+        samplesCollected: restingStats.samplesCollected,
+        restingBaseline,
       };
 
       // ✅ 修改18：保存电极基准到IndexedDB

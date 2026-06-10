@@ -23,6 +23,8 @@ import {
   generateReport,
   downloadFile,
 } from '@/lib/export-data';
+import { ElectrodeBaselineCapture } from '@/components/ElectrodeBaselineCapture';
+import { getRestingBaselineStats } from '@/lib/resting-baseline-utils';
 
 export default function Settings() {
   const [, setLocation] = useLocation();
@@ -31,6 +33,22 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [baselineSummary, setBaselineSummary] = useState('未采集');
+
+  const loadBaselineSummary = async () => {
+    try {
+      const baseline = await emgDatabase.getCalibration();
+      const stats = getRestingBaselineStats(baseline);
+      if (!stats) {
+        setBaselineSummary('未采集');
+        return;
+      }
+      const capturedAt = stats.capturedAt ? new Date(stats.capturedAt).toLocaleString() : '未知时间';
+      setBaselineSummary(`${capturedAt} · ${stats.samplesCollected || 0} 样本 · ch2底噪 ${stats.ch2Std.toFixed(2)}`);
+    } catch (err) {
+      setBaselineSummary('读取失败');
+    }
+  };
 
   // 加载统计数据
   useEffect(() => {
@@ -40,6 +58,7 @@ export default function Settings() {
         const sessions = await emgDatabase.getAllSessions();
         setTrainingCount(trainingData.length);
         setSessionCount(sessions.length);
+        await loadBaselineSummary();
       } catch (err) {
         const message = err instanceof Error ? err.message : '加载失败';
         setError(message);
@@ -150,6 +169,17 @@ export default function Settings() {
             <p className="text-sm text-green-700">{success}</p>
           </div>
         )}
+
+        <Card className="mb-8 p-6 bg-gray-950 text-white border-gray-800">
+          <h2 className="text-lg font-semibold mb-2">静息基线</h2>
+          <p className="text-sm text-gray-400 mb-4">
+            连接硬件后保持放松，采集 5 秒静息信号。训练采集、默念测试和后台底噪监测会使用这份基线。
+          </p>
+          <div className="mb-4 rounded border border-gray-800 bg-black p-3 text-sm text-gray-300">
+            当前基线：{baselineSummary}
+          </div>
+          <ElectrodeBaselineCapture onComplete={loadBaselineSummary} />
+        </Card>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           {/* Data Statistics */}
