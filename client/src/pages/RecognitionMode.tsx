@@ -119,6 +119,91 @@ const isValidSerialSample = (data: any): boolean => {
     Number.isFinite(data?.channel3);
 };
 
+interface FeatureNormalizer {
+  means: number[];
+  stds: number[];
+}
+
+const meanNumber = (values: number[]): number => {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+
+const stdNumber = (values: number[]): number => {
+  if (values.length === 0) return 1;
+  const mean = meanNumber(values);
+  const variance = meanNumber(values.map((value) => (value - mean) ** 2));
+  return Math.sqrt(variance) || 1;
+};
+
+const rmsSignal = (signal: number[]): number => {
+  if (signal.length === 0) return 0;
+  return Math.sqrt(meanNumber(signal.map((value) => value * value)));
+};
+
+const meanAbsSignal = (signal: number[]): number => {
+  if (signal.length === 0) return 0;
+  return meanNumber(signal.map((value) => Math.abs(value)));
+};
+
+const peakToPeakSignal = (signal: number[]): number => {
+  if (signal.length === 0) return 0;
+  return Math.max(...signal) - Math.min(...signal);
+};
+
+const diffSignal = (signal: number[]): number[] => {
+  const diffs: number[] = [];
+  for (let i = 1; i < signal.length; i++) {
+    diffs.push(signal[i] - signal[i - 1]);
+  }
+  return diffs;
+};
+
+const extractAmplitudeFeatureVector = (waveform: { ch1: number[]; ch2: number[]; ch3: number[] }): number[] => {
+  const features: number[] = [];
+  for (const channel of [waveform.ch1, waveform.ch2, waveform.ch3]) {
+    features.push(
+      rmsSignal(channel),
+      meanAbsSignal(channel),
+      peakToPeakSignal(channel),
+      rmsSignal(diffSignal(channel))
+    );
+  }
+  return features;
+};
+
+const buildFeatureNormalizer = (vectors: number[][]): FeatureNormalizer => {
+  if (vectors.length === 0) {
+    return { means: [], stds: [] };
+  }
+
+  const dimensionCount = vectors[0].length;
+  const means: number[] = [];
+  const stds: number[] = [];
+  for (let dim = 0; dim < dimensionCount; dim++) {
+    const values = vectors.map((vector) => vector[dim] ?? 0);
+    means.push(meanNumber(values));
+    stds.push(stdNumber(values));
+  }
+  return { means, stds };
+};
+
+const normalizeFeatureVector = (vector: number[], normalizer: FeatureNormalizer): number[] => {
+  return vector.map((value, index) => {
+    const mean = normalizer.means[index] ?? 0;
+    const std = normalizer.stds[index] || 1;
+    return (value - mean) / std;
+  });
+};
+
+const distanceSimilarity = (a: number[], b: number[]): number => {
+  if (a.length === 0 || a.length !== b.length) return 0;
+  const distance = Math.sqrt(a.reduce((sum, value, index) => {
+    return sum + (value - b[index]) ** 2;
+  }, 0));
+  return 100 / (1 + distance / Math.sqrt(a.length));
+};
+
 export default function RecognitionMode() {
   const [location, navigate] = useLocation();
   const { isConnected, onDataReceived } = useSerialConnectionContext();
@@ -546,6 +631,15 @@ export default function RecognitionMode() {
         const testCh2 = zscoreNorm([...testFeatures.timeDomain.ch2, ...testFeatures.frequencyDomain.ch2]);
         const testCh3 = zscoreNorm([...testFeatures.timeDomain.ch3, ...testFeatures.frequencyDomain.ch3]);
 
+        const amplitudeReferenceVectors = savedCommands.flatMap((cmd) =>
+          cmd.collections.map((collection) => extractAmplitudeFeatureVector(collection.waveform))
+        );
+        const amplitudeNormalizer = buildFeatureNormalizer(amplitudeReferenceVectors);
+        const testAmplitudeFeatures = normalizeFeatureVector(
+          extractAmplitudeFeatureVector(normalizedWaveform),
+          amplitudeNormalizer
+        );
+
         // 与每个指令的特征库比对
         // ✅ 修复5：扩展类型定义以包含通道权重信息
         const scores: Array<any> = [];
@@ -559,6 +653,8 @@ export default function RecognitionMode() {
         for (const cmd of savedCommands) {
           // ✅ 修复5：收集所有样本的相似度分数，用于计算top-k均值
           const sampleScores: number[] = [];
+          const amplitudeScores: number[] = [];
+          const shapeScores: number[] = [];
 
           // 与该指令的所有采集样本比对
           for (const collection of cmd.collections) {
@@ -619,20 +715,32 @@ export default function RecognitionMode() {
             lastChannelDiagnostics = { ch1: ch1Diag, ch2: ch2Diag, ch3: ch3Diag };
             
             // ✅ 修复3：使用动态权重计算结合相似度
-            const combinedSim = weights.ch1 * simCh1 + weights.ch2 * simCh2 + weights.ch3 * simCh3;
+            const shapeSim = weights.ch1 * simCh1 + weights.ch2 * simCh2 + weights.ch3 * simCh3;
+            const refAmplitudeFeatures = normalizeFeatureVector(
+              extractAmplitudeFeatureVector(collection.waveform),
+              amplitudeNormalizer
+            );
+            const amplitudeSim = distanceSimilarity(testAmplitudeFeatures, refAmplitudeFeatures);
+            const combinedSim = amplitudeSim * 0.7 + shapeSim * 0.3;
             sampleScores.push(combinedSim);
+            amplitudeScores.push(amplitudeSim);
+            shapeScores.push(shapeSim);
           }
 
           // ✅ 修复2：修复 topK 策略
           // 不固定取前70%，而是导出原始分数用于诊断
           const sampleCount = sampleScores.length;
           const sortedScores = [...sampleScores].sort((a, b) => b - a);
+          const sortedAmplitudeScores = [...amplitudeScores].sort((a, b) => b - a);
+          const sortedShapeScores = [...shapeScores].sort((a, b) => b - a);
           
           // 计算三种策略的分数，用于诊断对比
           const top1Score = sortedScores[0] || 0;
           const top3Scores = sortedScores.slice(0, Math.min(3, sortedScores.length));
           const top3Median = medianScore(top3Scores);
           const allMedian = medianScore(sortedScores);
+          const amplitudeTop3Median = medianScore(sortedAmplitudeScores.slice(0, Math.min(3, sortedAmplitudeScores.length)));
+          const shapeTop3Median = medianScore(sortedShapeScores.slice(0, Math.min(3, sortedShapeScores.length)));
           
           // 真实肌电样本波动较大，单条模板 top1 容易偶然高分；>=3 条采集时用 top3 中位数作为主分数。
           const score = sampleCount >= 3 ? top3Median : top1Score;
@@ -643,6 +751,10 @@ export default function RecognitionMode() {
             score: score,
             // ✅ 修复2：保存所有原始分数用于诊断
             allRawScores: sortedScores,
+            allAmplitudeScores: sortedAmplitudeScores,
+            allShapeScores: sortedShapeScores,
+            amplitudeScore: amplitudeTop3Median,
+            shapeScore: shapeTop3Median,
             top1: top1Score,
             top3Median: top3Median,
             allMedian: allMedian,
