@@ -1,0 +1,179 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.patchedDependencies", "pnpm.overrides". See https://pnpm.io/settings for the new home of each setting.
+
+> ear-emg-demo@1.0.0 test /home/ubuntu/ear-emg-demo
+> vitest run
+
+
+ RUN  v2.1.9 /home/ubuntu/ear-emg-demo
+
+ ✓ server/deletion-and-accuracy.test.ts (20 tests) 15ms
+ ✓ server/recognition-e2e-verification.test.ts (15 tests) 18ms
+ ✓ server/end-to-end.test.ts (10 tests) 47ms
+stdout | server/integrated-cropping.test.ts > CroppingLogManager > 应该正确记录裁剪日志
+[EMG] [第一阶段（空白区域裁剪）] 采集 #1: 1000 → 800 样本 (减少 200 样本, 20.0%) [100, 900]
+[EMG Debug]   置信度: 95.0%, SNR权重: ch1=0.400, ch2=0.300, ch3=0.300, 处理时间: 10.0ms
+[EMG Debug]   峰值数量: 1
+
+stdout | server/integrated-cropping.test.ts > CroppingLogManager > 应该分别记录第一阶段和第二阶段的日志
+[EMG] [第一阶段（空白区域裁剪）] 采集 #1: 1000 → 800 样本 (减少 200 样本, 20.0%) [100, 900]
+[EMG Debug]   置信度: 95.0%, SNR权重: ch1=0.400, ch2=0.300, ch3=0.300, 处理时间: 10.0ms
+[EMG] [第二阶段（统一长度裁剪）] 采集 #1: 800 → 512 样本 (减少 288 样本, 36.0%) [0, 512]
+[EMG Debug]   置信度: 100.0%, SNR权重: ch1=0.330, ch2=0.330, ch3=0.340, 处理时间: 5.0ms
+
+stdout | server/integrated-cropping.test.ts > CroppingLogManager > 应该正确计算统计信息
+[EMG] [第二阶段（统一长度裁剪）] 采集 #1: 800 → 512 样本 (减少 288 样本, 36.0%) [0, 512]
+[EMG Debug]   置信度: 90.0%, SNR权重: ch1=0.330, ch2=0.330, ch3=0.340, 处理时间: 5.0ms
+[EMG] [第二阶段（统一长度裁剪）] 采集 #2: 800 → 512 样本 (减少 288 样本, 36.0%) [0, 512]
+[EMG Debug]   置信度: 91.0%, SNR权重: ch1=0.330, ch2=0.330, ch3=0.340, 处理时间: 5.0ms
+[EMG] [第二阶段（统一长度裁剪）] 采集 #3: 800 → 512 样本 (减少 288 样本, 36.0%) [0, 512]
+[EMG Debug]   置信度: 92.0%, SNR权重: ch1=0.330, ch2=0.330, ch3=0.340, 处理时间: 5.0ms
+[EMG] [第二阶段（统一长度裁剪）] 采集 #4: 800 → 512 样本 (减少 288 样本, 36.0%) [0, 512]
+[EMG Debug]   置信度: 93.0%, SNR权重: ch1=0.330, ch2=0.330, ch3=0.340, 处理时间: 5.0ms
+[EMG] [第二阶段（统一长度裁剪）] 采集 #5: 800 → 512 样本 (减少 288 样本, 36.0%) [0, 512]
+[EMG Debug]   置信度: 94.0%, SNR权重: ch1=0.330, ch2=0.330, ch3=0.340, 处理时间: 5.0ms
+
+stdout | server/integrated-cropping.test.ts > CroppingLogManager > 应该清除所有日志
+[EMG] [第一阶段（空白区域裁剪）] 采集 #1: 1000 → 800 样本 (减少 200 样本, 20.0%) [100, 900]
+[EMG Debug]   置信度: 95.0%, SNR权重: ch1=0.400, ch2=0.300, ch3=0.300, 处理时间: 10.0ms
+
+ ✓ server/integrated-cropping.test.ts (22 tests) 35ms
+ ✓ server/real-emg-data.test.ts (11 tests) 11ms
+ ✓ server/database-primary-key-validation.test.ts (31 tests) 15ms
+ ✓ server/anomaly-dialog-state-reset.test.ts (16 tests) 12ms
+ ✓ server/data-export-integration.test.ts (19 tests) 70ms
+ ✓ server/recognition-stage-inference.test.ts (12 tests) 12ms
+ ✓ server/collection-mode-integration.test.ts (13 tests) 9ms
+ ✓ server/delete-operations-v2.test.ts (19 tests) 15ms
+ ✓ server/recognition-mode-integration.test.ts (14 tests) 9ms
+ ✓ server/problem3-verification.test.ts (15 tests) 12ms
+ ✓ server/anomaly-discard.test.ts (21 tests) 14ms
+ ✓ server/adaptive-cropping-algorithm.test.ts (17 tests) 30ms
+stdout | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > batchSimpleCroppingIndependent - 返回数组 > 应该返回与输入长度相同的数组
+[EMG Debug] [裁剪调试] frontIdx=4, rearIdx=980, startIdx=80, endIdx=1000, length=1000
+[EMG Debug] [裁剪调试] frontIdx=0, rearIdx=980, startIdx=0, endIdx=1000, length=1000
+[EMG Debug] [裁剪调试] frontIdx=19, rearIdx=980, startIdx=380, endIdx=1000, length=1000
+第0条：[80, 1000), 长度=920, 置信度=0.920
+第1条：[0, 1000), 长度=1000, 置信度=1.000
+第2条：[380, 1000), 长度=620, 置信度=0.620
+
+stdout | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > batchSimpleCroppingIndependent - 返回数组 > 应该每条独立处理，返回不同的结果
+[EMG Debug] [裁剪调试] frontIdx=0, rearIdx=980, startIdx=0, endIdx=1000, length=1000
+[EMG Debug] [裁剪调试] frontIdx=4, rearIdx=980, startIdx=80, endIdx=1000, length=1000
+[EMG Debug] [裁剪调试] frontIdx=4, rearIdx=980, startIdx=80, endIdx=1000, length=1000
+
+独立裁剪结果：
+第0条：[0, 1000), 长度=1000, 置信度=1.000
+第1条：[80, 1000), 长度=920, 置信度=0.920
+第2条：[80, 1000), 长度=920, 置信度=0.920
+
+stderr | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > batchSimpleCroppingIndependent - 返回数组 > 应该处理进度回调
+[EMG Warning] [裁剪警告] 未找到超过阈值的信号: frontIdx=-1, rearIdx=-1, threshold=1.00, energyRange=0
+[EMG Warning] [裁剪警告] 未找到超过阈值的信号: frontIdx=-1, rearIdx=-1, threshold=1.00, energyRange=0
+
+stdout | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > batchSimpleCroppingIndependent - 返回数组 > 应该处理单条波形
+[EMG Debug] [裁剪调试] frontIdx=4, rearIdx=980, startIdx=80, endIdx=1000, length=1000
+
+stderr | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > applyIndependentCropping - 应用独立裁剪 > 应该处理长度不匹配的情况
+[EMG Warning] [独立裁剪] 波形数(1) 与裁剪结果数(2) 不匹配，使用最小值
+
+stderr | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > applyIndependentCropping - 应用独立裁剪 > 应该处理无效索引（反序）
+[EMG Warning] [独立裁剪] 第0条：索引无效 [900, 100)，返回全段
+
+stdout | server/fix-1-2-independent-cropping.test.ts > 问题1.2修复：批量独立裁剪 > 与旧API的兼容性 > 新函数应该返回数组结构
+[EMG Debug] [裁剪调试] frontIdx=4, rearIdx=980, startIdx=80, endIdx=1000, length=1000
+
+ ✓ server/fix-1-2-independent-cropping.test.ts (11 tests) 58ms
+ ✓ server/improved-waveform-normalization.test.ts (25 tests) 18ms
+ ✓ server/codex-fixes.test.ts (8 tests) 16ms
+ ✓ server/recognition-export-fix.test.ts (8 tests) 12ms
+ ✓ server/adaptive-filtering.test.ts (25 tests) 28ms
+ ✓ server/adaptive-cropping.test.ts (13 tests) 13ms
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Step 1: Adaptive Cropping > should calculate adaptive threshold
+[EMG Debug] [Adaptive Threshold] RMS=58.259, Var=1701.369, Threshold=38.102
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Step 1: Adaptive Cropping > should detect valid section
+[EMG Debug] [Adaptive Threshold] RMS=58.374, Var=1707.102, Threshold=38.171
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Step 1: Adaptive Cropping > should perform step 1 cropping
+[EMG Debug] [Adaptive Threshold] RMS=58.309, Var=1703.078, Threshold=38.127
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Step 2: Uniform Scaling > should perform step 2 scaling
+[EMG Debug] [Adaptive Threshold] RMS=58.355, Var=1707.435, Threshold=38.167
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Complete Two-Step Cropping > should perform complete two-step cropping
+[EMG Debug] [Adaptive Threshold] RMS=58.353, Var=1705.846, Threshold=38.157
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Complete Two-Step Cropping > should get cropped waveform
+[EMG Debug] [Adaptive Threshold] RMS=58.340, Var=1707.066, Threshold=38.160
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Anomaly Detection > should detect anomalous waveforms
+[EMG Debug] [Adaptive Threshold] RMS=58.438, Var=1711.470, Threshold=38.216
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.329, Var=1704.703, Threshold=38.143
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.341, Var=1708.143, Threshold=38.167
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.345, Var=1704.633, Threshold=38.147
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.476, Var=1712.778, Threshold=38.236
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=17.978, Var=268.341, Threshold=13.584
+[EMG Debug] [Valid Section Detection] Start=100, End=300, Length=200
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Anomaly Detection > should not detect anomalies with insufficient data
+[EMG Debug] [Adaptive Threshold] RMS=58.255, Var=1699.351, Threshold=38.088
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Improved Two-Step Cropping > Reporting > should generate cropping report
+[EMG Debug] [Adaptive Threshold] RMS=58.326, Var=1705.582, Threshold=38.147
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.386, Var=1707.689, Threshold=38.178
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.241, Var=1701.819, Threshold=38.099
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+stdout | server/improved-two-step-cropping.test.ts > Append Collection Anomaly Detection > should support append collection with historical data comparison
+[EMG Debug] [Adaptive Threshold] RMS=58.267, Var=1700.161, Threshold=38.097
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.376, Var=1709.773, Threshold=38.188
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.307, Var=1703.875, Threshold=38.131
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+[EMG Debug] [Adaptive Threshold] RMS=58.267, Var=1700.161, Threshold=38.097
+[EMG Debug] [Valid Section Detection] Start=260, End=740, Length=480
+
+ ✓ server/improved-two-step-cropping.test.ts (17 tests) 1849ms
+   ✓ Improved Two-Step Cropping > Anomaly Detection > should detect anomalous waveforms 501ms
+   ✓ Improved Two-Step Cropping > Feature Extraction > should detect anomalies using features 489ms
+   ✓ Append Collection Anomaly Detection > should support append collection with historical data comparison 384ms
+ ✓ server/collection-uuid-manager.test.ts (19 tests) 55ms
+stdout | server/fix-1-1-threshold-algorithm.test.ts > 问题1.1修复：阈值算法边界检查和反序防护 > batchCroppingByRestingBaseline - 批量独立裁剪 > 应该每条独立裁剪，返回数组长度等于输入长度
+第0条：[0, 1000], 置信度=0.01
+第1条：[0, 1000], 置信度=0.01
+第2条：[160, 780], 置信度=0.08
+
+ ✓ server/fix-1-1-threshold-algorithm.test.ts (10 tests) 24ms
+ ✓ server/uuid-based-collection-manager.test.ts (21 tests) 59ms
+ ✓ server/accuracy-diagnostic.test.ts (18 tests) 15ms
+ ✓ server/collection-status-display.test.ts (13 tests) 21ms
+ ✓ server/feature-extraction-v2.test.ts (17 tests) 61ms
+ ✓ server/regression-tests.test.ts (11 tests) 13ms
+ ✓ server/anomaly-detection-v2.test.ts (12 tests) 122ms
+ ✓ server/processing-status-visualization.test.ts (11 tests) 10ms
+ ✓ server/waveform-status-badge.test.ts (13 tests) 9ms
+ ✓ server/collection-quality-scoring.test.ts (13 tests) 20ms
+ ✓ server/auth.logout.test.ts (1 test) 6ms
+ ✓ server/auth-utils.test.ts (10 tests) 1319ms
+   ✓ auth-utils > hashPassword and verifyPassword > should hash a password and verify it correctly 469ms
+   ✓ auth-utils > hashPassword and verifyPassword > should generate different hashes for same password 567ms
+
+ Test Files  35 passed (35)
+      Tests  531 passed (531)
+   Start at  13:12:20
+   Duration  4.73s (transform 1.36s, setup 0ms, collect 2.93s, tests 4.05s, environment 11ms, prepare 4.03s)
+
