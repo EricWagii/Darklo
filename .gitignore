@@ -116,5 +116,8 @@ client/public/__manus__/
 # Manus workspace/cache artifacts
 .manus/
 
+# Local git worktrees
+.worktrees/
+
 # Exported documentation binaries
 *.pdf
