@@ -38,6 +38,7 @@ import { batchCropCollectionsFast, applyCropping } from '@/lib/fast-cropping-opt
 import { batchCropCollectionsMultiPeak, applyCropping as applyMultiPeakCropping } from '@/lib/multi-peak-detection';
 import { batchSimpleCroppingCompat, applyCroppingToWaveforms as applySimpleCropping } from '@/lib/simple-front-rear-cropping';
 import { processWaveformUnified, WaveformPipelineConfig } from '@/lib/unified-waveform-pipeline';
+import type { StartupArtifactMetadata } from '@/lib/startup-artifact-suppression';
 import { integratedCroppingSystem } from '@/lib/integrated-cropping-system';
 import { anomalyDiscardSystem, generateUserPrompt } from '@/lib/anomaly-discard-system';
 import { WaveformQualityScorer } from '@/lib/cropping-logger-and-quality';
@@ -111,6 +112,7 @@ interface CollectionData {
     originalLength: number;
   };
   pipelineMetadata?: {
+    startupArtifact?: StartupArtifactMetadata;
     filteringParams?: {
       highPassCutoff: number;
       adaptiveFilterParams?: { windowSize: number; mu: number };
@@ -143,7 +145,10 @@ const buildQualityScoresForHistory = (history: CollectionData[]) => {
   }
 
   return evaluateAllCollectionsImproved(
-    history.map((col) => col.waveform)
+    history.map((col) => ({
+      ...col.waveform,
+      startupArtifactMeta: col.pipelineMetadata?.startupArtifact,
+    }))
   ).map((score, idx) => ({
     ...score,
     id: history[idx].id,

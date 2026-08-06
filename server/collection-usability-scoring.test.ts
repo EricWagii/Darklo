@@ -81,4 +81,46 @@ describe('collection usability scoring', () => {
     expect(after[0].expectedBurstCount).toBe(1);
     expect(after[0].rhythmConsistency).toBeGreaterThan(before[0].rhythmConsistency);
   });
+
+  it('caps usability when startup artifact cannot be separated from the action', () => {
+    const ambiguous = {
+      ...waveform(2),
+      startupArtifactMeta: {
+        detected: true,
+        ambiguous: true,
+        suppressedSamples: 0,
+        artifactRatio: 8,
+        stabilizationIndex: null,
+        reason: 'no quiet separation',
+      },
+    };
+    const scores = evaluateAllCollectionsImproved([
+      ambiguous,
+      waveform(2, 850),
+      waveform(2, 950),
+    ]);
+
+    expect(scores[0].artifactResistance).toBe(0);
+    expect(scores[0].overallScore).toBeLessThanOrEqual(25);
+    expect(scores[0].isOutlier).toBe(true);
+    expect(scores[0].recommendation).toContain('无法分离');
+  });
+
+  it('keeps a successfully suppressed startup artifact eligible for training', () => {
+    const cleaned = {
+      ...waveform(2),
+      startupArtifactMeta: {
+        detected: true,
+        ambiguous: false,
+        suppressedSamples: 90,
+        artifactRatio: 12,
+        stabilizationIndex: 80,
+        reason: 'suppressed',
+      },
+    };
+    const [score] = evaluateAllCollectionsImproved([cleaned, waveform(2), waveform(2)]);
+
+    expect(score.artifactResistance).toBe(90);
+    expect(score.overallScore).toBeGreaterThanOrEqual(55);
+  });
 });

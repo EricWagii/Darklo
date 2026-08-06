@@ -2,6 +2,7 @@ import {
   extractTemporalBurstFeatures,
   type TemporalBurstFeatures,
 } from './temporal-burst-recognition';
+import type { StartupArtifactMetadata } from './startup-artifact-suppression';
 
 export interface ImprovedQualityScore {
   overallScore: number;
@@ -9,6 +10,7 @@ export interface ImprovedQualityScore {
   activityClarity: number;
   morphologyConsistency: number;
   artifactResistance: number;
+  startupArtifactAmbiguous: boolean;
   detectedBurstCount: number;
   expectedBurstCount: number;
   profileConsistency: number;
@@ -30,7 +32,12 @@ export interface ImprovedQualityScore {
   };
 }
 
-type Waveform = { ch1: number[]; ch2: number[]; ch3: number[] };
+type Waveform = {
+  ch1: number[];
+  ch2: number[];
+  ch3: number[];
+  startupArtifactMeta?: StartupArtifactMetadata;
+};
 
 const clamp = (value: number, min = 0, max = 100): number =>
   Math.max(min, Math.min(max, value));
@@ -94,7 +101,13 @@ const calculateMorphologyConsistency = (
   return clamp(activeScore * 0.4 + durationScore * 0.35 + gapScore * 0.25);
 };
 
-const calculateArtifactResistance = (features: TemporalBurstFeatures): number => {
+const calculateArtifactResistance = (
+  features: TemporalBurstFeatures,
+  metadata?: StartupArtifactMetadata
+): number => {
+  if (metadata?.ambiguous) return 0;
+  if (metadata?.detected) return 90;
+  if (metadata) return 100;
   if (features.startupArtifactRatio <= 1.5) return 100;
   if (features.startupArtifactRatio >= 5) return 0;
   return clamp(100 - ((features.startupArtifactRatio - 1.5) / 3.5) * 100);
@@ -109,6 +122,9 @@ const calculateEnergyRange = (signal: number[]): { min: number; max: number } =>
 };
 
 function buildRecommendation(score: Omit<ImprovedQualityScore, 'recommendation'>): string {
+  if (score.startupArtifactAmbiguous) {
+    return '启动伪迹与真实动作无法分离，当前样本不可用于训练，建议保持静息后重录';
+  }
   if (score.detectedBurstCount === 0 || score.activityClarity < 20) {
     return '未检测到清晰肌电动作，建议检查电极接触并重录';
   }
@@ -151,7 +167,8 @@ export function evaluateAllCollectionsImproved(collections: Waveform[]): Improve
       features,
       dominant.value
     );
-    const artifactResistance = calculateArtifactResistance(current);
+    const startupArtifactAmbiguous = collection.startupArtifactMeta?.ambiguous === true;
+    const artifactResistance = calculateArtifactResistance(current, collection.startupArtifactMeta);
 
     let overallScore = Math.round(
       rhythmConsistency * 0.45 +
@@ -164,6 +181,7 @@ export function evaluateAllCollectionsImproved(collections: Waveform[]): Improve
     if (activityClarity < 20) overallScore = Math.min(overallScore, 35);
     if (!provisional && burstDifference > 0) overallScore = Math.min(overallScore, 45);
     if (provisional) overallScore = Math.min(overallScore, 75);
+    if (startupArtifactAmbiguous) overallScore = Math.min(overallScore, 25);
     overallScore = Math.round(clamp(overallScore));
 
     const energyRange = calculateEnergyRange(collection.ch2 || []);
@@ -173,12 +191,14 @@ export function evaluateAllCollectionsImproved(collections: Waveform[]): Improve
       activityClarity: Math.round(activityClarity),
       morphologyConsistency: Math.round(morphologyConsistency),
       artifactResistance: Math.round(artifactResistance),
+      startupArtifactAmbiguous,
       detectedBurstCount: current.burstCount,
       expectedBurstCount: dominant.value,
       profileConsistency: Math.round(dominant.consistency * 100),
       provisional,
       isOutlier:
         overallScore < 55 ||
+        startupArtifactAmbiguous ||
         current.burstCount === 0 ||
         (!provisional && burstDifference > 0),
       energyConsistency: Math.round(rhythmConsistency),

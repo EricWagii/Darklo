@@ -10,6 +10,12 @@ import { extractFullFeatures, normalizeFeatures } from './dsp-processor';
 import { calculateChannelWeights, fuseChannelFeatures } from './multi-channel-fusion';
 import { processWaveformUnified, WaveformPipelineConfig } from './unified-waveform-pipeline';
 
+const getPipelineStage = (qualityScore: number): string => {
+  if (qualityScore >= 70) return 'primary';
+  if (qualityScore >= 40) return 'fallback';
+  return 'final-fallback';
+};
+
 /**
  * 处理实时测试波形
  * 使用统一的波形处理流程：滤波降噪 -> 裁剪空白 -> 统一缩放
@@ -45,7 +51,7 @@ export function processTestWaveform(
         endIdx: pipelineResult.metadata.cropRange.endIdx,
         confidence: pipelineResult.metadata.qualityScore / 100,
         method: 'unified-pipeline',
-        stage: pipelineResult.metadata.qualityScore > 70 ? 'success' : 'degraded',
+        stage: getPipelineStage(pipelineResult.metadata.qualityScore),
         reason: pipelineResult.metadata.steps.join(' -> '),
       },
       normalizationMeta: {
@@ -53,6 +59,8 @@ export function processTestWaveform(
         targetLength: 512,
         timestamp: Date.now(),
       },
+      startupArtifactMeta: pipelineResult.metadata.startupArtifact,
+      pipelineQualityScore: pipelineResult.metadata.qualityScore,
     },
   };
 }
@@ -87,7 +95,7 @@ export function processReferenceWaveform(
         endIdx: pipelineResult.metadata.cropRange.endIdx,
         confidence: pipelineResult.metadata.qualityScore / 100,
         method: 'unified-pipeline',
-        stage: pipelineResult.metadata.qualityScore > 70 ? 'success' : 'degraded',
+        stage: getPipelineStage(pipelineResult.metadata.qualityScore),
         reason: pipelineResult.metadata.steps.join(' -> '),
       },
       normalizationMeta: {
@@ -95,6 +103,8 @@ export function processReferenceWaveform(
         targetLength: 512,
         timestamp: Date.now(),
       },
+      startupArtifactMeta: pipelineResult.metadata.startupArtifact,
+      pipelineQualityScore: pipelineResult.metadata.qualityScore,
     },
   };
 }
@@ -199,6 +209,17 @@ export function calculateFeatureSimilarity(
  */
 export function isProcessingAcceptable(processedWaveform: ProcessedWaveform): boolean {
   const croppingMeta = processedWaveform.meta.croppingMeta;
+
+  if (processedWaveform.meta.startupArtifactMeta?.ambiguous) {
+    return false;
+  }
+
+  if (
+    typeof processedWaveform.meta.pipelineQualityScore === 'number' &&
+    processedWaveform.meta.pipelineQualityScore < 40
+  ) {
+    return false;
+  }
   
   // 最终降级时返回false
   if (croppingMeta.stage === 'final-fallback') {
@@ -215,6 +236,10 @@ export function isProcessingAcceptable(processedWaveform: ProcessedWaveform): bo
 export function getProcessingStatusDescription(processedWaveform: ProcessedWaveform): string {
   const croppingMeta = processedWaveform.meta.croppingMeta;
   const confidence = (croppingMeta.confidence * 100).toFixed(0);
+
+  if (processedWaveform.meta.startupArtifactMeta?.ambiguous) {
+    return '❌ 启动伪迹与真实动作无法可靠分离';
+  }
   
   switch (croppingMeta.stage) {
     case 'primary':

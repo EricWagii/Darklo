@@ -32,7 +32,9 @@ import { processRecognitionFeedback, getCalibrationRecords } from '@/lib/auto-ca
 import { calculateCollectionQuality, calculateQualityWeightedSimilarity } from '@/lib/collection-quality-scoring';
 import { emgDatabase } from '@/lib/db';
 import { submitUserFeedback, calculatePerformanceMetrics } from '@/lib/model-feedback-system';
-import { processTestWaveform, processReferenceWaveform, extractAndFuseFeatures, calculateFeatureSimilarity, isProcessingAcceptable, type ProcessedWaveform } from '@/lib/recognition-processing';
+import { processTestWaveform, processReferenceWaveform, extractAndFuseFeatures, calculateFeatureSimilarity, getProcessingStatusDescription, isProcessingAcceptable, type ProcessedWaveform } from '@/lib/recognition-processing';
+import { evaluateAllCollectionsImproved } from '@/lib/quality-scoring-improved';
+import type { StartupArtifactMetadata } from '@/lib/startup-artifact-suppression';
 import { adaptiveFilterMultiChannel } from '@/lib/adaptive-waveform-filtering';
 import { FIXED_WAVEFORM_LENGTH } from '@shared/instruction-length-spec';
 import { showRecognitionCroppingToast } from '@/lib/cropping-completion-toast';
@@ -109,6 +111,10 @@ interface StoredCommand {
       pipelineVersion?: string;
       restingBaselineCapturedAt?: string;
       requiresRestingBaseline?: boolean;
+    };
+    pipelineMetadata?: {
+      qualityScore?: number;
+      startupArtifact?: StartupArtifactMetadata;
     };
   }>;
   createdAt: Date;
@@ -244,7 +250,9 @@ export default function RecognitionMode() {
     ch3: [],
   });
   const [recognitionHistory, setRecognitionHistory] = useState<RecognitionResult[]>([]);
-  const [useCNNModel, setUseCNNModel] = useState(false);
+  // CNN remains disabled until its training path can rebuild exclusively from
+  // the same usability-filtered samples used by the live recognition paths.
+  const [useCNNModel] = useState(false);
   const [cnnModelLoaded, setCNNModelLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedCommands, setSavedCommands] = useState<StoredCommand[]>([]);
@@ -620,12 +628,27 @@ export default function RecognitionMode() {
         return;
       }
       const compatibleCommands = savedCommands
-        .map((cmd) => ({
-          ...cmd,
-          collections: cmd.collections.filter((collection) =>
+        .map((cmd) => {
+          const baselineCompatible = cmd.collections.filter((collection) =>
             isCollectionPreprocessedWithRestingBaseline(collection)
-          ),
-        }))
+          );
+          const usabilityScores = evaluateAllCollectionsImproved(
+            baselineCompatible.map((collection) => ({
+              ...collection.waveform,
+              startupArtifactMeta: collection.pipelineMetadata?.startupArtifact,
+            }))
+          );
+
+          return {
+            ...cmd,
+            collections: baselineCompatible.filter((collection, index) => (
+              usabilityScores[index]?.detectedBurstCount > 0 &&
+              usabilityScores[index]?.activityClarity >= 20 &&
+              usabilityScores[index]?.artifactResistance >= 30 &&
+              collection.pipelineMetadata?.startupArtifact?.ambiguous !== true
+            )),
+          };
+        })
         .filter((cmd) => cmd.collections.length > 0);
 
       if (compatibleCommands.length === 0) {
@@ -665,7 +688,8 @@ export default function RecognitionMode() {
 
       // 检查处理结果
       if (!isProcessingAcceptable(processedWaveform)) {
-        const errorMsg = `信号质量不达标: ${croppingMeta.reason}，请重新测试`;
+        const processingDescription = getProcessingStatusDescription(processedWaveform);
+        const errorMsg = `信号质量不达标: ${processingDescription}，请保持静息后重新测试`;
         console.warn(errorMsg);
         setError(errorMsg);
         addRecognitionHistoryRecord({
@@ -673,7 +697,7 @@ export default function RecognitionMode() {
           command: '无法识别',
           confidence: 0,
           allScores: [],
-          processingStatus: processedWaveform.meta.croppingMeta.stage,
+          processingStatus: processingDescription,
         });
         return;
       }

@@ -26,6 +26,10 @@ export interface CollectionHandlerConfig {
       ch2: number[];
       ch3: number[];
     };
+    pipelineMetadata?: any;
+    preprocessingMeta?: any;
+    croppingMeta?: any;
+    normalizationMeta?: any;
   }>;
   currentUser: {
     userId: string | number;
@@ -50,6 +54,31 @@ export interface CollectionHandlerResult {
   }>;
   requiresUserAction?: boolean; // 是否需要用户处理异常
   processedWaveforms?: any[]; // 已处理的波形（用于异常删除后保存）
+}
+
+export function buildPersistedCollectionRecord(params: {
+  waveform: any;
+  source?: CollectionHandlerConfig['collectionHistory'][number];
+  index: number;
+  currentUser: CollectionHandlerConfig['currentUser'];
+  now?: number;
+}) {
+  const now = params.now ?? Date.now();
+  const wf = params.waveform;
+  return {
+    id: `col-${now}-${params.index}-${Math.random().toString(36).substr(2, 9)}`,
+    index: params.index,
+    timestamp: params.source?.timestamp?.getTime?.() ?? now,
+    waveform: { ch1: wf.ch1, ch2: wf.ch2, ch3: wf.ch3 },
+    userId: params.currentUser.userId,
+    userName: params.currentUser.userName,
+    croppingMeta: wf.meta.croppingMeta,
+    normalizationMeta: wf.meta.normalizationMeta,
+    pipelineMetadata: wf.meta.pipelineMetadata,
+    preprocessingMeta: wf.meta.preprocessingMeta ?? params.source?.preprocessingMeta,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 /**
@@ -124,12 +153,13 @@ export async function handleCompleteCollectionV2(
           steps: ['filtering', 'cropping', 'normalization']
         },
         // ✅ 修复问题5：保留 normalizationMeta 用于兼容性
-        normalizationMeta: (col as any).pipelineMetadata || {
+        normalizationMeta: col.normalizationMeta || {
           originalLength: col.waveform.ch1.length,
           targetLength: FIXED_WAVEFORM_LENGTH,
           timestamp: Date.now(),
           steps: ['filtering', 'cropping', 'normalization']
-        }
+        },
+        preprocessingMeta: col.preprocessingMeta
       }
     }));
 
@@ -172,22 +202,14 @@ export async function handleCompleteCollectionV2(
     const existingCommand = await emgDatabase.getCommand(commandName);
     const nextIndex = (existingCommand?.collections?.length || 0);
     
-    const collectionsToSave = processedWaveforms.map((wf, idx) => ({
-      id: `col-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`,
-      index: nextIndex + idx,  // ✅ 修复15：保持索引递增
-      timestamp: collectionHistory[idx].timestamp.getTime(),
-      waveform: {
-        ch1: wf.ch1,
-        ch2: wf.ch2,
-        ch3: wf.ch3
-      },
-      userId: currentUser.userId,
-      userName: currentUser.userName,
-      croppingMeta: wf.meta.croppingMeta,
-      normalizationMeta: wf.meta.normalizationMeta,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    }));
+    const collectionsToSave = processedWaveforms.map((wf, idx) =>
+      buildPersistedCollectionRecord({
+        waveform: wf,
+        source: collectionHistory[idx],
+        index: nextIndex + idx,
+        currentUser,
+      })
+    );
 
     // 保存到数据库
     logger.log(`保存 ${collectionsToSave.length} 条采集到数据库...`);
@@ -288,22 +310,13 @@ export async function handleSaveAfterAnomalyRemoval(
     const existingCommand = await emgDatabase.getCommand(commandName);
     const nextIndex = existingCommand?.collections?.length || 0;
 
-    const collectionsToSave = filteredWaveforms.map((wf, idx) => ({
-      id: `col-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`,
-      index: nextIndex + idx,
-      timestamp: Date.now(),
-      waveform: {
-        ch1: wf.ch1,
-        ch2: wf.ch2,
-        ch3: wf.ch3
-      },
-      userId: currentUser.userId,
-      userName: currentUser.userName,
-      croppingMeta: wf.meta.croppingMeta,
-      normalizationMeta: wf.meta.normalizationMeta,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    }));
+    const collectionsToSave = filteredWaveforms.map((wf, idx) =>
+      buildPersistedCollectionRecord({
+        waveform: wf,
+        index: nextIndex + idx,
+        currentUser,
+      })
+    );
 
     // 保存到数据库
     // ✅ 修复3：直接从IndexedDB查询指令，并合并旧样本

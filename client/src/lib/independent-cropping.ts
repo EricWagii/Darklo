@@ -153,6 +153,8 @@ export interface CroppingAndNormalizationMeta {
     targetLength: number;
     timestamp: number;
   };
+  startupArtifactMeta?: import('./startup-artifact-suppression').StartupArtifactMetadata;
+  pipelineQualityScore?: number;
 }
 
 export interface ProcessedWaveform {

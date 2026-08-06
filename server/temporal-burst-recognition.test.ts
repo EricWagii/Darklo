@@ -5,6 +5,7 @@ import {
   recognizeTemporalBurst,
 } from '../client/src/lib/temporal-burst-recognition';
 import { highPassFilter } from '../client/src/lib/adaptive-waveform-filtering';
+import { isProcessingAcceptable } from '../client/src/lib/recognition-processing';
 
 const makeBurstSignal = (burstCount: number, length = 512): number[] => {
   const signal = Array.from({ length }, () => 0);
@@ -40,6 +41,38 @@ describe('temporal burst recognition', () => {
   it('does not create a startup transient from a constant ADC offset', () => {
     const filtered = highPassFilter(Array.from({ length: 100 }, () => 2000));
     expect(Math.max(...filtered.map(Math.abs))).toBeLessThan(1e-9);
+  });
+
+  it('rejects a processing result when startup artifact cannot be separated', () => {
+    expect(isProcessingAcceptable({
+      ch1: makeBurstSignal(1),
+      ch2: makeBurstSignal(1),
+      ch3: makeBurstSignal(1),
+      meta: {
+        croppingMeta: {
+          startIdx: 0,
+          endIdx: 512,
+          confidence: 0.8,
+          method: 'unified-pipeline',
+          stage: 'primary',
+          reason: 'test',
+        },
+        normalizationMeta: {
+          originalLength: 1500,
+          targetLength: 512,
+          timestamp: Date.now(),
+        },
+        startupArtifactMeta: {
+          detected: true,
+          ambiguous: true,
+          suppressedSamples: 0,
+          artifactRatio: 6,
+          stabilizationIndex: null,
+          reason: '未找到可确认的稳定间隔',
+        },
+        pipelineQualityScore: 45,
+      },
+    })).toBe(false);
   });
 
   it('builds a model only when command burst profiles are distinct', () => {

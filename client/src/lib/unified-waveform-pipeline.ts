@@ -10,6 +10,10 @@
 import { comprehensiveFiltering, resampleSignal } from './adaptive-waveform-filtering';
 import { detectActiveSegment, improvedScaling } from './improved-waveform-normalization';
 import { adaptiveCropMultiChannel, analyzeCroppingQuality } from './adaptive-cropping-algorithm';
+import {
+  suppressStartupArtifactMultiChannel,
+  type StartupArtifactMetadata,
+} from './startup-artifact-suppression';
 
 export interface WaveformPipelineConfig {
   /** 目标长度（样本数） */
@@ -54,6 +58,8 @@ export interface WaveformPipelineResult {
     scaleFactor: number;
     /** 处理质量评分（0-100） */
     qualityScore: number;
+    /** 启动瞬态检测和处理结果 */
+    startupArtifact: StartupArtifactMetadata;
     /** 处理步骤日志 */
     steps: string[];
   };
@@ -103,6 +109,15 @@ export function processWaveformUnified(
       filteredLength = filtered.ch1.length;
       steps.push('滤波完成（仅基本滤波）');
     }
+
+    // 启动伪迹必须在裁剪前处理，避免其主导有效区间和后续缩放。
+    const startupArtifactResult = suppressStartupArtifactMultiChannel(
+      filtered,
+      config.samplingRate || 500
+    );
+    filtered = startupArtifactResult.cleaned;
+    const startupArtifact = startupArtifactResult.metadata;
+    steps.push(`启动伪迹检查: ${startupArtifact.reason}`);
 
     // ========== 步骤2：裁剪空白 ==========
     steps.push('开始自适应裁剪空白部分');
@@ -189,6 +204,7 @@ export function processWaveformUnified(
       cropConfidence: adaptiveCropResult.confidence,
       scalePreservation: scaleResult.scaleFactor,
       cropQualityScore: cropQuality.score,
+      startupArtifact,
     });
 
     steps.push(`处理完成，质量评分: ${qualityScore.toFixed(1)}/100`);
@@ -203,6 +219,7 @@ export function processWaveformUnified(
         cropRange: { startIdx: cropResult.start, endIdx: cropResult.end },
         scaleFactor: scaleResult.scaleFactor,
         qualityScore,
+        startupArtifact,
         steps,
       },
     };
@@ -221,6 +238,14 @@ export function processWaveformUnified(
         cropRange: { startIdx: 0, endIdx: originalLength - 1 },
         scaleFactor: 1.0,
         qualityScore: 0,
+        startupArtifact: {
+          detected: false,
+          ambiguous: true,
+          suppressedSamples: 0,
+          artifactRatio: 0,
+          stabilizationIndex: null,
+          reason: '处理流程异常，无法判断启动伪迹',
+        },
         steps,
       },
     };
@@ -238,6 +263,7 @@ function calculatePipelineQualityScore(params: {
   cropConfidence: number;
   scalePreservation: number;
   cropQualityScore?: number;
+  startupArtifact: StartupArtifactMetadata;
 }): number {
   let score = 100;
 
@@ -264,6 +290,12 @@ function calculatePipelineQualityScore(params: {
   if (params.finalLength !== 512 && params.finalLength !== 600) {
     // 假设目标长度是512或600
     score -= 5;
+  }
+
+  if (params.startupArtifact.ambiguous) {
+    score = Math.min(score, 30);
+  } else if (params.startupArtifact.detected) {
+    score -= Math.min(15, Math.max(4, (params.startupArtifact.artifactRatio - 2.8) * 2));
   }
 
   return Math.max(0, Math.min(100, score));
