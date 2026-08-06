@@ -14,6 +14,7 @@ import Home from "./pages/Home";
 import CollectionMode from "./pages/CollectionMode";
 import RecognitionMode from "./pages/RecognitionMode";
 import RecognitionDiagnostics from "./pages/RecognitionDiagnostics";
+import ContinuousCodeMode from "./pages/ContinuousCodeMode";
 import DataManagement from "./pages/DataManagement";
 import Settings from "./pages/Settings";
 import DemoMode from "./pages/DemoMode";
@@ -51,6 +52,13 @@ function Router() {
         {() => (
           <ProtectedRoute>
             <RecognitionDiagnostics />
+          </ProtectedRoute>
+        )}
+      </Route>
+      <Route path="/continuous-code">
+        {() => (
+          <ProtectedRoute>
+            <ContinuousCodeMode />
           </ProtectedRoute>
         )}
       </Route>

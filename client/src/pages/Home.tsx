@@ -156,14 +156,14 @@ export default function Home() {
         }}
       >
         <Container className="py-6">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-4">
             <div>
               <div className="label mb-2">AI LAB / DEEP ANALYSIS</div>
               <h1 className="text-3xl font-bold" style={{ fontFamily: 'var(--font-display)' }}>
                 Wagii - Darklo EMG Silent Speech
               </h1>
             </div>
-            <div className="flex gap-4 items-center">
+            <div className="flex flex-wrap gap-4 items-center">
               {isLoggedIn && currentUser && (
                 <div style={{
                   color: '#d4af37',
@@ -190,6 +190,9 @@ export default function Home() {
               </Button>
               <Button variant="secondary" onClick={() => navigate('/recognition-diagnostics')}>
                 识别诊断
+              </Button>
+              <Button variant="secondary" onClick={() => navigate('/continuous-code')}>
+                连续肌电编码
               </Button>
 
               {isLoggedIn && currentUser?.isAdmin && (
