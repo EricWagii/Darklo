@@ -1,5 +1,5 @@
 /**
- * 改进的采集质量评分显示组件
+ * 采集样本识别可用度显示组件
  * 
  * 功能：
  * - 显示改进的质量评分
@@ -97,7 +97,7 @@ export function ImprovedQualityScoreDisplay({
               {score.overallScore}
             </div>
             <div style={{ fontSize: '11px', color: '#888' }}>
-              {getScoreLabel(score.overallScore)}
+              {score.provisional ? '暂定' : getScoreLabel(score.overallScore)}
             </div>
             <div style={{ fontSize: '12px', marginTop: '4px' }}>
               {renderStars(getStarRating(score.overallScore))}
@@ -146,19 +146,26 @@ export function ImprovedQualityScoreDisplay({
         </div>
       </div>
 
-      {/* 详细指标 - 三列布局 */}
+      <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '10px' }}>
+        检测动作 {score.detectedBurstCount} 次
+        {score.provisional
+          ? ' · 样本不足，尚未确认多数节律'
+          : ` · 本指令多数节律 ${score.expectedBurstCount} 次（稳定度 ${score.profileConsistency}%）`}
+      </div>
+
+      {/* 识别可用度的四个组成指标 */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
           gap: '12px',
           marginBottom: '12px',
         }}
       >
-        {/* 能量一致性 */}
+        {/* 动作节律 */}
         <div>
           <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
-            能量一致性
+            动作节律
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <div
@@ -173,21 +180,21 @@ export function ImprovedQualityScoreDisplay({
               <div
                 style={{
                   height: '100%',
-                  width: `${score.energyConsistency}%`,
+                  width: `${score.rhythmConsistency}%`,
                   backgroundColor: '#4ade80',
                 }}
               />
             </div>
             <div style={{ fontSize: '11px', color: '#4ade80', minWidth: '28px' }}>
-              {score.energyConsistency}%
+              {score.rhythmConsistency}%
             </div>
           </div>
         </div>
 
-        {/* 信号强度 */}
+        {/* 动作清晰度 */}
         <div>
           <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
-            信号强度
+            动作清晰度
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <div
@@ -202,21 +209,21 @@ export function ImprovedQualityScoreDisplay({
               <div
                 style={{
                   height: '100%',
-                  width: `${score.signalStrength}%`,
+                  width: `${score.activityClarity}%`,
                   backgroundColor: '#60a5fa',
                 }}
               />
             </div>
             <div style={{ fontSize: '11px', color: '#60a5fa', minWidth: '28px' }}>
-              {score.signalStrength}%
+              {score.activityClarity}%
             </div>
           </div>
         </div>
 
-        {/* 波形变化性 */}
+        {/* 形态一致性 */}
         <div>
           <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
-            波形变化性
+            时长/间隔一致性
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <div
@@ -231,13 +238,37 @@ export function ImprovedQualityScoreDisplay({
               <div
                 style={{
                   height: '100%',
-                  width: `${score.variability}%`,
+                  width: `${score.morphologyConsistency}%`,
                   backgroundColor: '#fbbf24',
                 }}
               />
             </div>
             <div style={{ fontSize: '11px', color: '#fbbf24', minWidth: '28px' }}>
-              {score.variability}%
+              {score.morphologyConsistency}%
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
+            起始伪迹控制
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{
+              flex: 1,
+              height: '6px',
+              backgroundColor: 'rgba(255, 255, 255, 0.1)',
+              borderRadius: '3px',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${score.artifactResistance}%`,
+                backgroundColor: '#c084fc',
+              }} />
+            </div>
+            <div style={{ fontSize: '11px', color: '#c084fc', minWidth: '28px' }}>
+              {score.artifactResistance}%
             </div>
           </div>
         </div>
@@ -290,13 +321,13 @@ export function ImprovedQualityScoreDisplay({
           }}
         >
           <div>
-            峰值幅度: {score.details.peakAmplitude.toFixed(2)}
+            检测动作: {score.detectedBurstCount} 次；参考动作: {score.expectedBurstCount} 次
           </div>
           <div>
-            能量范围: [{score.details.energyRange.min.toFixed(2)}, {score.details.energyRange.max.toFixed(2)}]
+            动作占比: {(score.details.activeRatio * 100).toFixed(1)}%；平均动作时长: {(score.details.meanBurstDurationRatio * 100).toFixed(1)}%
           </div>
           <div>
-            噪声水平: {score.details.noiseLevel.toFixed(4)}
+            静息包络: {score.details.noiseLevel.toFixed(2)}；起始伪迹比: {score.details.startupArtifactRatio.toFixed(2)}
           </div>
         </div>
       </details>
@@ -305,7 +336,7 @@ export function ImprovedQualityScoreDisplay({
 }
 
 /**
- * 改进的质量评分列表组件
+ * 样本识别可用度列表组件
  */
 interface ImprovedQualityScoreListProps {
   scores: Array<ImprovedQualityScore & { id: string; index: number }>;
@@ -326,11 +357,11 @@ export function ImprovedQualityScoreList({
       : 0;
 
   const outlierCount = scores.filter((s) => s.isOutlier).length;
-  const goodCount = scores.filter((s) => s.overallScore >= 70).length;
+  const goodCount = scores.filter((s) => s.overallScore >= 75).length;
   const fairCount = scores.filter(
-    (s) => s.overallScore >= 50 && s.overallScore < 70
+    (s) => s.overallScore >= 55 && s.overallScore < 75
   ).length;
-  const poorCount = scores.filter((s) => s.overallScore < 50).length;
+  const poorCount = scores.filter((s) => s.overallScore < 55).length;
 
   return (
     <div>
@@ -347,19 +378,19 @@ export function ImprovedQualityScoreList({
         }}
       >
         <div>
-          <div style={{ fontSize: '11px', color: '#aaa' }}>平均评分</div>
+          <div style={{ fontSize: '11px', color: '#aaa' }}>平均可用度</div>
           <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4ade80' }}>
             {avgScore}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#aaa' }}>优秀</div>
+          <div style={{ fontSize: '11px', color: '#aaa' }}>可用</div>
           <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4ade80' }}>
             {goodCount}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#aaa' }}>一般</div>
+          <div style={{ fontSize: '11px', color: '#aaa' }}>待复核</div>
           <div
             style={{
               fontSize: '20px',

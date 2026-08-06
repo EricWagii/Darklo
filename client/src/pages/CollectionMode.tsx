@@ -310,7 +310,7 @@ export default function CollectionMode() {
     }
   };
 
-  // 更新质量评分（使用改进的算法）
+  // 根据当前同指令样本集动态更新识别可用度；删除样本后会重新建立多数节律。
   useEffect(() => {
     if (collectionHistory.length === 0) {
       setQualityScores([]);
@@ -321,7 +321,7 @@ export default function CollectionMode() {
       try {
         setQualityScores(buildQualityScoresForHistory(collectionHistory));
       } catch (err) {
-        console.error('质量评分计算失败:', err);
+        console.error('样本可用度计算失败:', err);
       }
     }
   }, [collectionHistory]);
@@ -588,7 +588,7 @@ export default function CollectionMode() {
     console.log(`[采集 #${newCollection.index}] 计时器时长: ${collectionTime}ms`);
     console.log(`[采集 #${newCollection.index}] 指令: ${commandName || '未设置'}`);
     console.log(`[采集 #${newCollection.index}] 处理流程: ${pipelineResult.metadata.steps.join(' -> ')}`);
-    console.log(`[采集 #${newCollection.index}] 质量评分: ${qualityScore.toFixed(1)}/100`);
+    console.log(`[采集 #${newCollection.index}] 处理流程评分: ${qualityScore.toFixed(1)}/100`);
 
     setCollectionHistory([...collectionHistory, newCollection]);
     setCollectionCount(collectionCount + 1);
@@ -1077,7 +1077,7 @@ export default function CollectionMode() {
                             fontSize: '11px'
                           }}>
                             <span style={{ color: dynamicQualityColor, fontWeight: 'bold' }}>
-                              质量 {dynamicQualityScore.overallScore}
+                              可用度 {dynamicQualityScore.overallScore}
                             </span>
                             <span style={{ color: '#aaa' }}>
                               {getDynamicQualityLabel(dynamicQualityScore.overallScore)}
@@ -1110,7 +1110,7 @@ export default function CollectionMode() {
           </div>
         )}
 
-        {/* 质量评分 */}
+        {/* 识别可用度 */}
         {qualityScores.length > 0 && (
           <div style={{ marginBottom: '24px' }}>
             <ImprovedQualityScoreList

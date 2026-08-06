@@ -39,6 +39,11 @@ import { showRecognitionCroppingToast } from '@/lib/cropping-completion-toast';
 import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import { dataChangeEventManager, DataChangeEventType } from '@/lib/data-change-events';
+import {
+  buildTemporalBurstModel,
+  recognizeTemporalBurst,
+  type TemporalBurstFeatures,
+} from '@/lib/temporal-burst-recognition';
 
 interface RecognitionResult {
   historyId?: string;
@@ -72,6 +77,13 @@ interface RecognitionResult {
   channelDiagnostics?: { ch1: any; ch2: any; ch3: any };
   // ✅ 修复1：添加匹配集合分数
   matchedCollectionScores?: number[];
+  recognitionMode?: 'temporal-burst' | 'legacy-feature' | 'cnn';
+  temporalBurstFeatures?: TemporalBurstFeatures;
+  temporalBurstProfiles?: Array<{
+    command: string;
+    expectedBurstCount: number;
+    consistency: number;
+  }>;
 }
 
 interface StoredCommand {
@@ -673,6 +685,17 @@ export default function RecognitionMode() {
         ch3: processedWaveform.ch3,
       };
 
+      const temporalBurstModel = buildTemporalBurstModel(
+        compatibleCommands.map((cmd) => ({
+          name: cmd.name,
+          signals: cmd.collections.map((collection) => collection.waveform.ch2),
+        }))
+      );
+      const temporalBurstResult = recognizeTemporalBurst(
+        normalizedWaveform.ch2,
+        temporalBurstModel
+      );
+
       if (useCNNModel && cnnModelLoaded) {
         // 使用 CNN 模型识别
         const cnnResult = cnnModelManager.recognize(
@@ -693,6 +716,7 @@ export default function RecognitionMode() {
             command: cnnResult.command || '❌ 识别不确定',
             confidence: cnnResult.confidence || 0,
             allScores: scores,
+            recognitionMode: 'cnn',
             processingStatus: `${processedWaveform.meta.croppingMeta.stage} (置信度: ${(processedWaveform.meta.croppingMeta.confidence * 100).toFixed(0)}%)`,
           };
         } else {
@@ -706,6 +730,40 @@ export default function RecognitionMode() {
           });
           return;
         }
+      } else if (temporalBurstResult) {
+        const thresholdScore = confidenceThreshold * 100;
+        const minMarginScore = 10;
+        let command = temporalBurstResult.command;
+        if (temporalBurstResult.score < thresholdScore) {
+          command = '❌ 识别不确定 (低于阈值)';
+        } else if (temporalBurstResult.margin < minMarginScore) {
+          command = '❌ 识别不确定 (节律margin较小)';
+        }
+
+        result = {
+          timestamp: new Date(),
+          command,
+          confidence: temporalBurstResult.score,
+          allScores: temporalBurstResult.scores,
+          threshold: confidenceThreshold,
+          top1Score: temporalBurstResult.score,
+          top2Score: temporalBurstResult.scores[1]?.score || 0,
+          scoreMargin: temporalBurstResult.margin,
+          recognitionMode: 'temporal-burst',
+          temporalBurstFeatures: temporalBurstResult.features,
+          temporalBurstProfiles: temporalBurstModel.profiles.map((profile) => ({
+            command: profile.command,
+            expectedBurstCount: profile.expectedBurstCount,
+            consistency: profile.consistency,
+          })),
+          processingStatus: `${processedWaveform.meta.croppingMeta.stage} · 节律识别 ${temporalBurstResult.features.burstCount} 次爆发`,
+          processedWaveform: {
+            ch1: processedWaveform.ch1,
+            ch2: processedWaveform.ch2,
+            ch3: processedWaveform.ch3,
+            meta: processedWaveform.meta,
+          },
+        };
       } else {
         // 使用通道独立特征比对，再按通道质量权重合成指令分数。
         // ✅ 修复：提取每个通道的特征（不融合）
@@ -907,6 +965,7 @@ export default function RecognitionMode() {
           channelDiagnostics: topCommand.channelDiagnostics,
           allRawScores: topCommand.allRawScores,
           matchedCollectionScores: topCommand.allRawScores,
+          recognitionMode: 'legacy-feature',
           processingStatus: `${processedWaveform.meta.croppingMeta.stage} (置信度: ${(processedWaveform.meta.croppingMeta.confidence * 100).toFixed(0)}%)`,
           processedWaveform: {
             ch1: processedWaveform.ch1,
@@ -1036,6 +1095,9 @@ export default function RecognitionMode() {
           channelWeights: lastRecognitionResult.channelWeights,
           channelDiagnostics: lastRecognitionResult.channelDiagnostics,
           matchedCollectionScores: lastRecognitionResult.allRawScores,
+          recognitionMode: lastRecognitionResult.recognitionMode,
+          temporalBurstFeatures: lastRecognitionResult.temporalBurstFeatures,
+          temporalBurstProfiles: lastRecognitionResult.temporalBurstProfiles,
         };
         
         await emgDatabase.saveRecognitionRecord(recognitionRecord);

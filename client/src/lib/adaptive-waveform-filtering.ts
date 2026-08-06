@@ -66,19 +66,16 @@ export function highPassFilter(
   // 标准一阶高通：alpha = rc / (rc + dt)
   const alpha = rc / (rc + dt);
 
-  const filtered: number[] = [];
-  let prevOutput = 0;
+  const filtered: number[] = [0];
+  let previousInput = signal[0];
+  let previousOutput = 0;
 
-  for (let i = 0; i < signal.length; i++) {
-    if (i === 0) {
-      filtered.push(0);
-      prevOutput = signal[i];
-    } else {
-      // 高通滤波：y[n] = alpha * (y[n-1] + x[n] - x[n-1])
-      const output = alpha * (prevOutput + signal[i] - signal[i - 1]);
-      filtered.push(output);
-      prevOutput = output;
-    }
+  for (let i = 1; i < signal.length; i++) {
+    // 高通滤波：y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+    const output = alpha * (previousOutput + signal[i] - previousInput);
+    filtered.push(output);
+    previousInput = signal[i];
+    previousOutput = output;
   }
 
   return filtered;
