@@ -35,6 +35,12 @@ import {
 } from '@/lib/continuous-emg-detector';
 import { MORSE_ENTRIES } from '@/lib/morse-code';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
+import {
+  appendContinuousSample,
+  buildContinuousDiagnosticPackage,
+  createContinuousSampleCapture,
+  downloadDiagnosticJson,
+} from '@/lib/emg-diagnostic-export';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 type SessionPhase =
@@ -56,6 +62,7 @@ interface TimelineEntry {
 const BASELINE_SAMPLE_COUNT = HARDWARE_CONFIG.SAMPLE_RATE * 3;
 const CALIBRATION_TARGET = 3;
 const DISPLAY_SAMPLE_COUNT = 750;
+const CONTINUOUS_CAPTURE_MAX_SAMPLES = HARDWARE_CONFIG.SAMPLE_RATE * 60 * 30;
 
 const emptySnapshot: DetectorSnapshot = {
   envelope: 0,
@@ -69,8 +76,8 @@ const emptySnapshot: DetectorSnapshot = {
 const phaseNames: Record<SessionPhase, string> = {
   idle: '等待校准',
   baseline: '采集静息基线',
-  shortCalibration: '校准短咬',
-  longCalibration: '校准长咬',
+  shortCalibration: '校准短时事件',
+  longCalibration: '校准长时事件',
   ready: '校准完成',
   decoding: '持续解码中',
   paused: '已暂停',
@@ -109,6 +116,8 @@ export default function ContinuousCodeMode() {
   const envelopeBufferRef = useRef<number[]>([]);
   const frameCountRef = useRef(0);
   const lastTimestampRef = useRef(0);
+  const continuousCaptureRef = useRef(createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES));
+  const [captureSampleCount, setCaptureSampleCount] = useState(0);
 
   const setPhase = useCallback((next: SessionPhase) => {
     phaseRef.current = next;
@@ -154,6 +163,8 @@ export default function ContinuousCodeMode() {
   }, []);
 
   const startBaseline = useCallback(() => {
+    continuousCaptureRef.current = createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES);
+    setCaptureSampleCount(0);
     baselineSamplesRef.current = [];
     baselineStatsRef.current = null;
     shortDurationsRef.current = [];
@@ -174,7 +185,7 @@ export default function ContinuousCodeMode() {
   const startLongCalibration = useCallback(() => {
     detectorRef.current?.reset();
     setPhase('longCalibration');
-    addTimeline({ at: Date.now(), kind: 'system', message: '短咬完成，请进行至少 3 次长咬' });
+    addTimeline({ at: Date.now(), kind: 'system', message: '短时事件完成，请进行至少 3 次长时肌电事件' });
   }, [addTimeline, setPhase]);
 
   const finishCalibration = useCallback(() => {
@@ -248,7 +259,7 @@ export default function ContinuousCodeMode() {
         createCalibrationDetector(baseline);
         setBaselineProgress(100);
         setPhase('shortCalibration');
-        addTimeline({ at: timestamp, kind: 'system', message: '静息基线完成，请进行至少 3 次短咬' });
+        addTimeline({ at: timestamp, kind: 'system', message: '静息基线完成，请进行至少 3 次短时肌电事件' });
       }
     }
 
@@ -272,11 +283,11 @@ export default function ContinuousCodeMode() {
         if (currentPhase === 'shortCalibration') {
           shortDurationsRef.current = [...shortDurationsRef.current, event.durationMs].slice(0, 5);
           setShortDurations(shortDurationsRef.current);
-          addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '记录短咬' });
+          addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '记录短时事件' });
         } else if (currentPhase === 'longCalibration') {
           longDurationsRef.current = [...longDurationsRef.current, event.durationMs].slice(0, 5);
           setLongDurations(longDurationsRef.current);
-          addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '记录长咬' });
+          addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '记录长时事件' });
         } else if (currentPhase === 'decoding') {
           const config = decoderConfigRef.current;
           if (config) {
@@ -284,6 +295,24 @@ export default function ContinuousCodeMode() {
             addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '识别动作脉冲' });
           }
         }
+      }
+    }
+
+    if (currentPhase !== 'idle') {
+      continuousCaptureRef.current = appendContinuousSample(continuousCaptureRef.current, {
+        timestamp,
+        ch1: data.channel1,
+        ch2: data.channel2,
+        ch3: data.channel3,
+        envelope: snapshot.envelope,
+        startThreshold: snapshot.startThreshold,
+        endThreshold: snapshot.endThreshold,
+        isActive: snapshot.isActive,
+        isBlocked: snapshot.isBlocked,
+        phase: currentPhase,
+      });
+      if (frameCountRef.current % 25 === 0) {
+        setCaptureSampleCount(continuousCaptureRef.current.columns.timestamps.length);
       }
     }
 
@@ -309,24 +338,23 @@ export default function ContinuousCodeMode() {
   };
 
   const exportSession = () => {
-    const payload = {
-      exportedAt: new Date().toISOString(),
+    if (continuousCaptureRef.current.columns.timestamps.length === 0) return;
+    const payload = buildContinuousDiagnosticPackage({
+      capture: continuousCaptureRef.current,
       sampleRate: HARDWARE_CONFIG.SAMPLE_RATE,
       sourceChannel: 'CH2',
       phase,
       paceMode,
       decoderConfig,
       calibration,
+      baselineSamples: baselineSamplesRef.current,
+      baselineStats: baselineStatsRef.current,
+      shortDurationsMs: shortDurationsRef.current,
+      longDurationsMs: longDurationsRef.current,
       decoder,
       timeline: [...timeline].reverse(),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `continuous-emg-code-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    });
+    downloadDiagnosticJson(payload, 'continuous-neuromuscular-decoder-complete-diagnostic');
   };
 
   const calibrationReady = Boolean(calibration);
@@ -338,11 +366,15 @@ export default function ContinuousCodeMode() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <div className="label mb-2">CONTINUOUS EMG CODE</div>
-              <h1 className="text-3xl font-bold">连续肌电编码</h1>
+              <h1 className="text-3xl font-bold">连续神经肌电时序解码</h1>
             </div>
             <div className="flex flex-wrap gap-3">
               <Button onClick={() => navigate('/')}><ArrowLeft size={16} className="inline mr-2" />返回</Button>
-              <Button onClick={exportSession}><Download size={16} className="inline mr-2" />导出本次会话</Button>
+              <span title={captureSampleCount > 0 ? '导出三通道原始 ADC、包络、动态阈值、校准参数、解码状态和事件日志' : '开始校准并采集数据后可导出'}>
+                <Button onClick={exportSession} disabled={captureSampleCount === 0}>
+                  <Download size={16} className="inline mr-2" />导出完整诊断包
+                </Button>
+              </span>
             </div>
           </div>
         </Container>
@@ -351,8 +383,8 @@ export default function ContinuousCodeMode() {
       <Container>
         <Section className="py-10">
           <SectionLabel number="01">LIVE SESSION</SectionLabel>
-          <SectionTitle subtitle="独立使用 CH2，不读取也不修改原有指令库、训练样本或识别历史。">
-            长咬、短咬与停顿输入
+          <SectionTitle subtitle="基于个体化生物电校准，实现实时事件分割、时序编码与流式字符输出。">
+            自适应生物电事件解析
           </SectionTitle>
 
           <div className="grid gap-6 lg:grid-cols-3 mb-6">
@@ -389,7 +421,7 @@ export default function ContinuousCodeMode() {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <div className="label mb-2">会话校准</div>
-                <div className="text-secondary">静息 3 秒，随后各完成至少 3 次短咬和长咬。</div>
+                <div className="text-secondary">静息 3 秒，随后各完成至少 3 次短时和长时肌电事件。</div>
               </div>
               <div className="flex flex-wrap gap-3">
                 <Button variant="primary" disabled={!serial.isConnected || phase === 'baseline'} onClick={startBaseline}>
@@ -397,20 +429,20 @@ export default function ContinuousCodeMode() {
                 </Button>
                 {phase === 'shortCalibration' && (
                   <Button variant="success" disabled={shortDurations.length < CALIBRATION_TARGET} onClick={startLongCalibration}>
-                    短咬完成 ({shortDurations.length})
+                    短时事件完成 ({shortDurations.length})
                   </Button>
                 )}
                 {phase === 'longCalibration' && (
                   <Button variant="success" disabled={longDurations.length < CALIBRATION_TARGET} onClick={finishCalibration}>
-                    完成长咬校准 ({longDurations.length})
+                    完成长时事件校准 ({longDurations.length})
                   </Button>
                 )}
               </div>
             </div>
             {calibration && (
               <div className="grid grid-cols-3 gap-4 mt-6 max-md:grid-cols-1">
-                <div><span className="text-secondary">短咬中位数</span><div>{Math.round(calibration.shortMedianMs)} ms</div></div>
-                <div><span className="text-secondary">长咬中位数</span><div>{Math.round(calibration.longMedianMs)} ms</div></div>
+                <div><span className="text-secondary">短时事件中位数</span><div>{Math.round(calibration.shortMedianMs)} ms</div></div>
+                <div><span className="text-secondary">长时事件中位数</span><div>{Math.round(calibration.longMedianMs)} ms</div></div>
                 <div><span className="text-secondary">分类边界</span><div>{Math.round(calibration.durationBoundaryMs)} ms</div></div>
               </div>
             )}
@@ -420,7 +452,7 @@ export default function ContinuousCodeMode() {
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="label mb-2">流式解码</div>
-                <div className="text-secondary text-sm">短咬为点，长咬为划；短停顿连续输入，长静息只收口或舍弃未决尾段。</div>
+                <div className="text-secondary text-sm">自适应解析生物电事件持续特征与时序边界，连续生成编码序列。</div>
               </div>
               <div className="flex gap-2">
                 {phase !== 'decoding' ? (

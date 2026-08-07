@@ -42,6 +42,12 @@ import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import { dataChangeEventManager, DataChangeEventType } from '@/lib/data-change-events';
 import {
+  buildRecognitionDiagnosticPackage,
+  downloadDiagnosticJson,
+  type RecognitionDiagnosticTrial,
+} from '@/lib/emg-diagnostic-export';
+import { HARDWARE_CONFIG } from '@shared/hardware-config';
+import {
   buildTemporalBurstModel,
   recognizeTemporalBurst,
   type TemporalBurstFeatures,
@@ -337,7 +343,18 @@ export default function RecognitionMode() {
     ch2: [],
     ch3: [],
   });
+  const waveformTimestampBufferRef = useRef<number[]>([]);
   const lastRecognitionSampleAtRef = useRef<number | null>(null);
+  const recognitionTrialsRef = useRef<RecognitionDiagnosticTrial[]>([]);
+  const activeDiagnosticTrialIdRef = useRef<string | null>(null);
+  const [recognitionDiagnosticCount, setRecognitionDiagnosticCount] = useState(0);
+
+  const updateActiveDiagnosticTrial = (patch: Partial<RecognitionDiagnosticTrial>) => {
+    const trialId = activeDiagnosticTrialIdRef.current;
+    if (!trialId) return;
+    const trial = recognitionTrialsRef.current.find((item) => item.trialId === trialId);
+    if (trial) Object.assign(trial, patch);
+  };
 
   const loadRecognitionData = async () => {
     try {
@@ -427,7 +444,9 @@ export default function RecognitionMode() {
         waveformBufferRef.current.ch1.push(data.channel1);
         waveformBufferRef.current.ch2.push(data.channel2);
         waveformBufferRef.current.ch3.push(data.channel3);
-        lastRecognitionSampleAtRef.current = data.timestamp || Date.now();
+        const timestamp = data.timestamp || Date.now();
+        waveformTimestampBufferRef.current.push(timestamp);
+        lastRecognitionSampleAtRef.current = timestamp;
 
         // 实时显示（最多显示 3000 个点，约6秒采集时长）
         setCurrentWaveform((prev) => ({
@@ -570,6 +589,22 @@ export default function RecognitionMode() {
     setSelectedTrueCommand('');
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
     waveformBufferRef.current = { ch1: [], ch2: [], ch3: [] };
+    waveformTimestampBufferRef.current = [];
+    const trialId = createRecognitionHistoryId();
+    activeDiagnosticTrialIdRef.current = trialId;
+    const diagnosticTrial: RecognitionDiagnosticTrial = {
+      trialId,
+      startedAt: Date.now(),
+      rawWaveform: {
+        ...waveformBufferRef.current,
+        timestamps: waveformTimestampBufferRef.current,
+      },
+      status: 'capturing',
+    };
+    recognitionTrialsRef.current = [
+      ...recognitionTrialsRef.current,
+      diagnosticTrial,
+    ].slice(-50);
     lastRecognitionSampleAtRef.current = null;
     setRecognitionTime(0);
     setShowElectrodeCheck(false);
@@ -588,6 +623,8 @@ export default function RecognitionMode() {
     }
 
     setIsRecognizing(false);
+    updateActiveDiagnosticTrial({ endedAt: Date.now(), status: 'completed' });
+    setRecognitionDiagnosticCount(recognitionTrialsRef.current.length);
 
     const sampleCount = waveformBufferRef.current.ch1.length;
     console.log(`[识别] 停止识别，采集到 ${sampleCount} 个有效样本`);
@@ -598,6 +635,11 @@ export default function RecognitionMode() {
         : '未收到任何有效串口样本';
       const errorMsg = `未采集到足够有效信号（${sampleCount}/${MIN_RECOGNITION_SAMPLES}），请确认设备仍在输出数据后重试。${lastSampleText}`;
       console.warn('[识别]', errorMsg);
+      updateActiveDiagnosticTrial({
+        status: 'failed',
+        failureReason: errorMsg,
+        result: { predictedCommand: '无法识别', confidence: 0, processingStatus: errorMsg },
+      });
       setError(errorMsg);
       setShowFeedback(false);
       setLastRecognitionResult(null);
@@ -618,6 +660,7 @@ export default function RecognitionMode() {
       if (!restingBaseline) {
         const errorMsg = '缺少静息基线，本次识别未处理。请先采集静息基线后重试';
         setError(errorMsg);
+        updateActiveDiagnosticTrial({ status: 'failed', failureReason: errorMsg });
         addRecognitionHistoryRecord({
           timestamp: new Date(),
           command: '无法识别',
@@ -654,6 +697,7 @@ export default function RecognitionMode() {
       if (compatibleCommands.length === 0) {
         const errorMsg = '没有可用的静息基线预处理训练样本。请重新采集训练数据后再测试';
         setError(errorMsg);
+        updateActiveDiagnosticTrial({ status: 'failed', failureReason: errorMsg });
         addRecognitionHistoryRecord({
           timestamp: new Date(),
           command: '无法识别',
@@ -692,6 +736,12 @@ export default function RecognitionMode() {
         const errorMsg = `信号质量不达标: ${processingDescription}，请保持静息后重新测试`;
         console.warn(errorMsg);
         setError(errorMsg);
+        updateActiveDiagnosticTrial({
+          status: 'failed',
+          failureReason: errorMsg,
+          processedWaveform,
+          result: { predictedCommand: '无法识别', confidence: 0, processingStatus: processingDescription },
+        });
         addRecognitionHistoryRecord({
           timestamp: new Date(),
           command: '无法识别',
@@ -745,6 +795,12 @@ export default function RecognitionMode() {
           };
         } else {
           setError(cnnResult.message);
+          updateActiveDiagnosticTrial({
+            status: 'failed',
+            failureReason: cnnResult.message,
+            processedWaveform,
+            result: { predictedCommand: '无法识别', confidence: 0, recognitionMode: 'cnn' },
+          });
           addRecognitionHistoryRecord({
             timestamp: new Date(),
             command: '无法识别',
@@ -1001,6 +1057,15 @@ export default function RecognitionMode() {
       }
       
       // 显示反馈面板（仅在识别成功时）
+      updateActiveDiagnosticTrial({
+        status: 'completed',
+        processedWaveform: result.processedWaveform ?? processedWaveform,
+        result: {
+          ...result,
+          timestamp: result.timestamp instanceof Date ? result.timestamp.toISOString() : result.timestamp,
+          predictedCommand: result.command,
+        },
+      });
       setLastRecognitionResult(result);
       // 只有当识别成功且置信度足够高时才显示反馈
       const isRecognitionSuccess = !isUncertainRecognition(result.command);
@@ -1062,6 +1127,13 @@ export default function RecognitionMode() {
       
       // 5. 更新自适应阈值
       const isCorrect = !isUncertainRecognition(lastRecognitionResult.command) && lastRecognitionResult.command === selectedTrueCommand;
+      updateActiveDiagnosticTrial({
+        feedback: {
+          actualCommand: selectedTrueCommand,
+          isCorrect,
+          submittedAt: Date.now(),
+        },
+      });
       if (isCorrect) {
         const newThreshold = Math.max(0.5, adaptiveThreshold - 0.05);
         setAdaptiveThreshold(newThreshold);
@@ -1368,8 +1440,7 @@ export default function RecognitionMode() {
             </div>
           )}
 
-          {/* 诊断导出按钮 */}
-          {/* 诊断导出按钮 - 总是显示，但无数据时禁用 */}
+          {/* 完整诊断导出：保留每次试验的原始、处理后波形和判定链路。 */}
           <div style={{
             display: 'flex',
             gap: '12px',
@@ -1379,54 +1450,50 @@ export default function RecognitionMode() {
           }}>
             <button
               onClick={async () => {
-                if (recognitionHistory.length === 0) {
+                if (recognitionTrialsRef.current.length === 0) {
                   alert('没有识别数据可导出，请先进行识别测试');
                   return;
                 }
                 try {
-                  const { exportCompleteDiagnosticData } = await import('@/lib/data-export');
-                  const exportData = recognitionHistory.map(r => ({
-                    predictedCommand: r.command,
-                    command: r.command,
-                    actualCommand: r.userCorrection || '',
-                    isCorrect: r.isCorrect,
-                    confidence: r.confidence,
-                    allScores: r.allScores,
-                    timestamp: r.timestamp instanceof Date ? r.timestamp.getTime() : r.timestamp,
-                    threshold: r.threshold || 0.7,
-                    topK: r.topK || 5,
-                    recordType: r.userCorrection ? 'feedback' : 'recognition',
-                    croppingMeta: (r as any).croppingMeta,
-                    normalizationMeta: (r as any).normalizationMeta,
-                  }));
-                  await exportCompleteDiagnosticData(exportData, savedCommands);
+                  const payload = buildRecognitionDiagnosticPackage({
+                    trials: recognitionTrialsRef.current,
+                    commands: savedCommands,
+                    sampleRate: HARDWARE_CONFIG.SAMPLE_RATE,
+                    context: {
+                      confidenceThreshold,
+                      adaptiveThreshold,
+                      restingBaseline: globalElectrodeBaseline,
+                      connectedAtExport: isConnected,
+                    },
+                  });
+                  downloadDiagnosticJson(payload, 'silent-recognition-complete-diagnostic');
                 } catch (err) {
                   console.error('诊断导出失败:', err);
                   alert('诊断导出失败，请查看控制台');
                 }
               }}
-              disabled={recognitionHistory.length === 0}
+              disabled={recognitionDiagnosticCount === 0}
               style={{
                 padding: '10px 20px',
-                backgroundColor: recognitionHistory.length > 0 ? '#8b5cf6' : '#666',
+                backgroundColor: recognitionDiagnosticCount > 0 ? '#8b5cf6' : '#666',
                 color: '#fff',
                 border: 'none',
                 borderRadius: '4px',
-                cursor: recognitionHistory.length > 0 ? 'pointer' : 'not-allowed',
+                cursor: recognitionDiagnosticCount > 0 ? 'pointer' : 'not-allowed',
                 fontWeight: 'bold',
                 fontSize: '12px',
               }}
-              title={recognitionHistory.length > 0 ? '导出本次会话的识别诊断数据（不包含波形）' : '请先进行识别测试'}
+              title={recognitionDiagnosticCount > 0 ? '导出原始三通道波形、处理结果、全部评分、反馈和训练样本' : '请先完成至少一次识别测试'}
             >
-              📄 诊断导出 (本次会话)
+              📄 导出完整诊断包
             </button>
-            {recognitionHistory.length > 0 && (
+            {recognitionDiagnosticCount > 0 && (
               <span style={{
                 color: '#d4af37',
                 fontSize: '12px',
                 fontStyle: 'italic',
               }}>
-                {recognitionHistory.length} 条数据 · 不含波形
+                {recognitionDiagnosticCount} 次试验 · 含原始与处理后波形
               </span>
             )}
           </div>
