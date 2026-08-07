@@ -18,6 +18,7 @@ export type PulseClassification = 'dot' | 'dash' | 'uncertain';
 
 export interface PulseInput {
   durationMs: number;
+  startedAt: number;
   endedAt: number;
 }
 
@@ -64,19 +65,18 @@ export const appendPulse = (
   pulse: PulseInput,
   config: DecoderConfig
 ): DecoderState => {
-  const settled = tickDecoder(state, pulse.endedAt, config);
   const classification = classifyPulseDuration(pulse.durationMs, config);
 
   if (classification === 'uncertain') {
     return {
-      ...settled,
+      ...state,
       status: 'uncertain',
       lastClassification: classification,
-      uncertainPulseCount: settled.uncertainPulseCount + 1,
+      uncertainPulseCount: state.uncertainPulseCount + 1,
       events: [
-        ...settled.events,
+        ...state.events,
         {
-          id: `${pulse.endedAt}-${settled.events.length}-uncertain`,
+          id: `${pulse.endedAt}-${state.events.length}-uncertain`,
           kind: 'uncertain',
           at: pulse.endedAt,
           reason: 'uncertain-pulse',
@@ -86,11 +86,15 @@ export const appendPulse = (
   }
 
   const stream = appendStreamSymbol(
-    settled,
-    { symbol: classification === 'dot' ? '.' : '-', endedAt: pulse.endedAt },
+    state,
+    {
+      symbol: classification === 'dot' ? '.' : '-',
+      startedAt: pulse.startedAt,
+      endedAt: pulse.endedAt,
+    },
     config
   );
-  return { ...settled, ...stream, lastClassification: classification };
+  return { ...state, ...stream, lastClassification: classification };
 };
 
 export const forceSplitDecoder = (

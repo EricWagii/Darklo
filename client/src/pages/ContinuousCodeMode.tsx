@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'wouter';
-import { Activity, ArrowLeft, Check, Download, Pause, Play, RotateCcw, Undo2 } from 'lucide-react';
+import { ArrowLeft, Download, Pause, Play, RotateCcw } from 'lucide-react';
 import {
   Button,
   Card,
@@ -11,12 +11,12 @@ import {
   SectionTitle,
 } from '@/components/PremiumComponents';
 import { ContinuousEmgWaveform } from '@/components/ContinuousEmgWaveform';
+import { ContinuousCodeStreamPanel } from '@/components/ContinuousCodeStreamPanel';
 import { useSerialConnectionContext } from '@/contexts/SerialConnectionContext';
 import {
   appendPulse,
-  confirmPending,
   createDecoderState,
-  getCharacterCountdownMs,
+  forceSplitDecoder,
   PACE_PRESETS,
   resetDecoder,
   tickDecoder,
@@ -100,9 +100,8 @@ export default function ContinuousCodeMode() {
   const [detectorSnapshot, setDetectorSnapshot] = useState<DetectorSnapshot>(emptySnapshot);
   const [decoder, setDecoder] = useState<DecoderState>(() => createDecoderState());
   const [paceMode, setPaceMode] = useState<PaceMode>('slow');
-  const [customCharacterGapMs, setCustomCharacterGapMs] = useState(7_000);
-  const [customWordGapMs, setCustomWordGapMs] = useState(18_000);
-  const [now, setNow] = useState(Date.now());
+  const [customCharacterBoundaryMs, setCustomCharacterBoundaryMs] = useState(1_200);
+  const [customForceSplitMs, setCustomForceSplitMs] = useState(4_000);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [rawSamples, setRawSamples] = useState<number[]>([]);
   const [envelopeSamples, setEnvelopeSamples] = useState<number[]>([]);
@@ -119,15 +118,21 @@ export default function ContinuousCodeMode() {
   const decoderConfig = useMemo<DecoderConfig | null>(() => {
     if (!calibration) return null;
     const pace = paceMode === 'custom'
-      ? { characterGapMs: customCharacterGapMs, wordGapMs: customWordGapMs }
+      ? {
+          characterBoundaryMs: customCharacterBoundaryMs,
+          forceSplitMs: Math.max(customForceSplitMs, customCharacterBoundaryMs * 1.8),
+        }
       : PACE_PRESETS[paceMode];
     return {
       durationBoundaryMs: calibration.durationBoundaryMs,
       uncertaintyMarginMs: calibration.uncertaintyMarginMs,
-      characterGapMs: pace.characterGapMs,
-      wordGapMs: Math.max(pace.wordGapMs, pace.characterGapMs + 1_000),
+      characterBoundaryMs: pace.characterBoundaryMs,
+      forceSplitMs: pace.forceSplitMs,
+      boundaryUncertaintyMs: Math.min(160, Math.max(70, pace.characterBoundaryMs * 0.15)),
+      maxCandidates: 16,
+      maxPendingSymbols: 24,
     };
-  }, [calibration, customCharacterGapMs, customWordGapMs, paceMode]);
+  }, [calibration, customCharacterBoundaryMs, customForceSplitMs, paceMode]);
   const decoderConfigRef = useRef<DecoderConfig | null>(null);
 
   useEffect(() => {
@@ -206,8 +211,8 @@ export default function ContinuousCodeMode() {
   useEffect(() => {
     if (phase !== 'decoding' || !decoderConfig) return;
     const timer = window.setInterval(() => {
+      if (detectorRef.current?.getSnapshot().isActive) return;
       const timestamp = Date.now();
-      setNow(timestamp);
       setDecoder((current) => tickDecoder(current, timestamp, decoderConfig));
     }, 100);
     return () => window.clearInterval(timer);
@@ -324,7 +329,6 @@ export default function ContinuousCodeMode() {
     URL.revokeObjectURL(url);
   };
 
-  const countdown = decoderConfig ? getCharacterCountdownMs(decoder, now, decoderConfig) : null;
   const calibrationReady = Boolean(calibration);
 
   return (
@@ -412,43 +416,37 @@ export default function ContinuousCodeMode() {
             )}
           </Card>
 
+          <Card className="mb-8">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="label mb-2">流式解码</div>
+                <div className="text-secondary text-sm">短咬为点，长咬为划；短停顿连续输入，长静息只收口或舍弃未决尾段。</div>
+              </div>
+              <div className="flex gap-2">
+                {phase !== 'decoding' ? (
+                  <Button variant="success" disabled={!calibrationReady} onClick={startDecoding}>
+                    <Play size={16} className="inline mr-2" />开始
+                  </Button>
+                ) : (
+                  <Button onClick={() => setPhase('paused')}><Pause size={16} className="inline mr-2" />暂停</Button>
+                )}
+                <Button disabled={phase !== 'paused'} onClick={startDecoding}><Play size={16} className="inline mr-2" />继续</Button>
+              </div>
+            </div>
+            <ContinuousCodeStreamPanel
+              decodedText={decoder.committedText}
+              pendingSymbols={decoder.pendingSymbols}
+              events={decoder.events}
+              status={decoder.status}
+              onForceSplit={() => decoderConfig && setDecoder((current) => forceSplitDecoder(current, Date.now(), decoderConfig))}
+              onUndo={() => setDecoder(undoDecoder)}
+              onClear={() => setDecoder(resetDecoder())}
+            />
+            {decoder.status === 'uncertain' && <p className="mt-4 text-amber-300">当前尾段存在时序或动作歧义，系统不会猜测；可继续输入、撤销或使用长静息收口。</p>}
+            {decoder.status === 'discarded' && <p className="mt-4 text-orange-500">未决尾段无法可靠解码，已舍弃；此前确认文本保持不变。</p>}
+          </Card>
+
           <div className="grid gap-8 xl:grid-cols-2">
-            <Card>
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-                <div>
-                  <div className="label mb-2">解码输出</div>
-                  <div className="text-secondary text-sm">短咬为点，长咬为划；字符确认后可无限等待。</div>
-                </div>
-                <div className="flex gap-2">
-                  {phase !== 'decoding' ? (
-                    <Button variant="success" disabled={!calibrationReady} onClick={startDecoding}>
-                      <Play size={16} className="inline mr-2" />开始
-                    </Button>
-                  ) : (
-                    <Button onClick={() => setPhase('paused')}><Pause size={16} className="inline mr-2" />暂停</Button>
-                  )}
-                  <Button disabled={phase !== 'paused'} onClick={startDecoding}><Play size={16} className="inline mr-2" />继续</Button>
-                </div>
-              </div>
-
-              <div className="border p-6 mb-4 min-h-32" style={{ borderColor: 'var(--color-border)', backgroundColor: '#090b0c' }}>
-                <div className="text-3xl break-words" style={{ letterSpacing: 0 }}>{decoder.text || '等待输入'}</div>
-                <div className="text-accent text-2xl mt-4 font-mono">{decoder.pendingCode || '· · ·'}</div>
-              </div>
-              <div className="flex flex-wrap gap-3 items-center">
-                <Button disabled={!decoder.pendingCode} onClick={() => setDecoder((current) => confirmPending(current, Date.now()))}>
-                  <Check size={16} className="inline mr-2" />立即确认字符
-                </Button>
-                <Button onClick={() => setDecoder(undoDecoder)}><Undo2 size={16} className="inline mr-2" />撤销</Button>
-                <Button variant="error" onClick={() => setDecoder(resetDecoder())}>清空输出</Button>
-                <span className="text-secondary text-sm">
-                  {countdown === null ? '字符间可自由等待' : `${(countdown / 1000).toFixed(1)} 秒后确认当前字符`}
-                </span>
-              </div>
-              {decoder.status === 'uncertain' && <p className="text-error mt-4">本次动作时长处于点划模糊区，已忽略，请重新输入。</p>}
-              {decoder.status === 'invalid' && <p className="text-error mt-4">当前点划组合不是有效前缀，请撤销后重试。</p>}
-            </Card>
-
             <Card>
               <div className="label mb-4">输入节奏</div>
               <div className="flex flex-wrap gap-2 mb-5">
@@ -460,18 +458,22 @@ export default function ContinuousCodeMode() {
               </div>
               {paceMode === 'custom' && (
                 <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
-                  <label className="text-secondary">字符等待（秒）
-                    <input className="input mt-2" type="number" min={2} max={30} value={customCharacterGapMs / 1000}
-                      onChange={(event) => setCustomCharacterGapMs(Math.max(2_000, Number(event.target.value) * 1000))} />
+                  <label className="text-secondary">普通字符边界（秒）
+                    <input className="input mt-2" type="number" min={0.3} max={2.5} step={0.1} value={customCharacterBoundaryMs / 1000}
+                      onChange={(event) => setCustomCharacterBoundaryMs(Math.min(2_500, Math.max(300, Number(event.target.value) * 1000)))} />
                   </label>
-                  <label className="text-secondary">单词停顿（秒）
-                    <input className="input mt-2" type="number" min={3} max={60} value={customWordGapMs / 1000}
-                      onChange={(event) => setCustomWordGapMs(Math.max(3_000, Number(event.target.value) * 1000))} />
+                  <label className="text-secondary">强制分隔静息（秒）
+                    <input className="input mt-2" type="number" min={1.5} max={10} step={0.1} value={customForceSplitMs / 1000}
+                      onChange={(event) => setCustomForceSplitMs(Math.min(10_000, Math.max(1_500, Number(event.target.value) * 1000)))} />
                   </label>
                 </div>
               )}
+              <p className="mt-4 text-sm text-secondary">强制分隔始终至少为普通字符边界的 1.8 倍；它不会回退已经确认的字符。</p>
+            </Card>
+
+            <Card>
+              <div className="label mb-3">系统事件</div>
               <Divider className="my-6" />
-              <div className="label mb-3">最近事件</div>
               <div className="space-y-2 max-h-64 overflow-auto">
                 {timeline.length === 0 && <div className="text-secondary">暂无事件</div>}
                 {timeline.slice(0, 12).map((entry, index) => (

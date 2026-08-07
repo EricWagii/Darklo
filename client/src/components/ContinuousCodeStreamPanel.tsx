@@ -40,6 +40,8 @@ export function ContinuousCodeStreamPanel({
   onClear,
 }: ContinuousCodeStreamPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const liveTailRef = useRef<HTMLDivElement>(null);
+  const decodedOutputRef = useRef<HTMLDivElement>(null);
   const visibleEvents = useMemo(
     () => events.filter((event) => eventSymbol(event) !== null),
     [events]
@@ -52,6 +54,16 @@ export function ContinuousCodeStreamPanel({
     const element = scrollRef.current;
     if (element) element.scrollLeft = element.scrollWidth;
   }, [events.length]);
+
+  useEffect(() => {
+    const element = liveTailRef.current;
+    if (element) element.scrollLeft = element.scrollWidth;
+  }, [pendingSymbols]);
+
+  useEffect(() => {
+    const element = decodedOutputRef.current;
+    if (element) element.scrollLeft = element.scrollWidth;
+  }, [decodedText]);
 
   return (
     <div
@@ -69,8 +81,14 @@ export function ContinuousCodeStreamPanel({
       <div className="border px-4 py-3" style={{ borderColor: '#263226', backgroundColor: '#030704' }}>
         <div className="text-[11px] uppercase text-lime-300/70">Decoded output</div>
         <div className="mt-3 flex min-h-14 items-center overflow-hidden">
-          <div className="shrink-0 text-2xl font-normal uppercase text-lime-300 md:text-3xl" style={fontStyle}>
-            {decodedText.toUpperCase() || 'READY'}
+          <div
+            ref={decodedOutputRef}
+            className="min-w-0 max-w-[72%] overflow-x-auto whitespace-nowrap"
+            data-role="decoded-output-strip"
+          >
+            <div className="w-max text-2xl font-normal uppercase text-lime-300 md:text-3xl" style={fontStyle}>
+              {decodedText.toUpperCase() || 'READY'}
+            </div>
           </div>
           <div className="ml-2 h-9 w-[2px] shrink-0 bg-lime-300 shadow-[0_0_9px_rgba(132,255,80,.9)]" />
           <div className="relative h-10 min-w-36 flex-1 overflow-hidden" aria-hidden="true">
@@ -97,9 +115,14 @@ export function ContinuousCodeStreamPanel({
         style={{ borderColor: '#263226' }}
         data-layout="compact-single-line"
       >
-        <div className="w-44 shrink-0 border-r px-3 py-2" style={{ borderColor: '#263226' }}>
+        <div className="w-[38%] min-w-0 max-w-[34rem] shrink-0 border-r px-3 py-2" style={{ borderColor: '#263226' }}>
           <div className="text-[10px] uppercase text-lime-300/65">Live tail</div>
-          <div className="mt-3 overflow-hidden whitespace-nowrap text-lg text-lime-300" aria-label="当前未决点划">
+          <div
+            ref={liveTailRef}
+            className="mt-3 overflow-x-auto whitespace-nowrap text-lg text-lime-300"
+            aria-label="当前未决点划"
+            data-role="live-tail-strip"
+          >
             {pendingSymbols || '—'}
           </div>
           <div className="mt-2 text-[9px] uppercase text-lime-300/45">{status}</div>
@@ -151,15 +174,21 @@ export function ContinuousCodeStreamPanel({
       </div>
 
       <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <Button onClick={onForceSplit} disabled={!pendingSymbols} title="强制结束当前未决尾段">
-          <Scissors size={15} aria-hidden="true" /><span className="ml-2">强制分隔</span>
-        </Button>
-        <Button onClick={onUndo} title="撤销最近输入">
-          <Undo2 size={15} aria-hidden="true" /><span className="ml-2">撤销</span>
-        </Button>
-        <Button variant="error" onClick={onClear} title="清空本次输出">
-          <RotateCcw size={15} aria-hidden="true" /><span className="ml-2">清空</span>
-        </Button>
+        <span title="强制结束当前未决尾段">
+          <Button onClick={onForceSplit} disabled={!pendingSymbols}>
+            <Scissors size={15} aria-hidden="true" /><span className="ml-2">强制分隔</span>
+          </Button>
+        </span>
+        <span title="撤销最近输入">
+          <Button onClick={onUndo}>
+            <Undo2 size={15} aria-hidden="true" /><span className="ml-2">撤销</span>
+          </Button>
+        </span>
+        <span title="清空本次输出">
+          <Button variant="error" onClick={onClear}>
+            <RotateCcw size={15} aria-hidden="true" /><span className="ml-2">清空</span>
+          </Button>
+        </span>
       </div>
     </div>
   );

@@ -70,7 +70,7 @@ const dedupeCandidates = (
     const current = bestByValue.get(key);
     if (!current || candidate.score > current.score) bestByValue.set(key, candidate);
   }
-  return [...bestByValue.values()]
+  return Array.from(bestByValue.values())
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, config.maxCandidates));
 };
@@ -141,11 +141,12 @@ const initialCandidate = (state: StreamState): SegmentationCandidate[] =>
 
 export const appendStreamSymbol = (
   state: StreamState,
-  input: { symbol: MorseSymbol; endedAt: number },
+  input: { symbol: MorseSymbol; startedAt?: number; endedAt: number },
   config: StreamConfig
 ): StreamState => {
   let next = state;
-  const gap = state.lastSymbolEndedAt === null ? null : input.endedAt - state.lastSymbolEndedAt;
+  const startedAt = input.startedAt ?? input.endedAt;
+  const gap = state.lastSymbolEndedAt === null ? null : startedAt - state.lastSymbolEndedAt;
   if (gap !== null && gap >= config.forceSplitMs && state.pendingSymbols) {
     next = forceSplit(state, input.endedAt, config);
   }
@@ -157,7 +158,7 @@ export const appendStreamSymbol = (
   if (current.length === 0) {
     candidates = [{ committedText: '', pendingSymbols: input.symbol, score: 0 }];
   } else {
-    const effectiveGap = next.lastSymbolEndedAt === null ? 0 : input.endedAt - next.lastSymbolEndedAt;
+    const effectiveGap = next.lastSymbolEndedAt === null ? 0 : startedAt - next.lastSymbolEndedAt;
     const lower = config.characterBoundaryMs - config.boundaryUncertaintyMs;
     const upper = config.characterBoundaryMs + config.boundaryUncertaintyMs;
     const allowContinuation = effectiveGap <= upper;
@@ -249,21 +250,16 @@ export const advanceStream = (
   if (idleMs >= config.forceSplitMs) return forceSplit(state, now, config);
   if (idleMs < config.characterBoundaryMs) return state;
 
-  const finals = finalizeCandidates(state);
-  const distinct = [...new Set(finals.map((candidate) => candidate.text))];
-  if (distinct.length === 1) return commitFinalText(state, distinct[0], now, finals[0]?.code);
-
-  const stable = commonPrefix(distinct);
-  if (stable) {
-    const released = commitFinalText(state, stable, now);
-    return { ...released, status: 'candidate' };
-  }
+  const released = releaseStablePrefix(state, state.candidates, now);
+  const finals = finalizeCandidates(released);
+  const distinct = Array.from(new Set(finals.map((candidate) => candidate.text)));
+  if (distinct.length === 1) return commitFinalText(released, distinct[0], now, finals[0]?.code);
   return {
-    ...state,
+    ...released,
     status: 'candidate',
-    events: state.events.some((item) => item.kind === 'candidate-boundary' && item.at === now)
-      ? state.events
-      : [...state.events, event(state, 'candidate-boundary', now)],
+    events: released.events.some((item) => item.kind === 'candidate-boundary' && item.at === now)
+      ? released.events
+      : [...released.events, event(released, 'candidate-boundary', now)],
   };
 };
 
@@ -284,7 +280,7 @@ export const forceSplit = (
     };
   }
 
-  const distinct = [...new Set(finals.map((candidate) => candidate.text))];
+  const distinct = Array.from(new Set(finals.map((candidate) => candidate.text)));
   if (distinct.length === 1) return commitFinalText(state, distinct[0], now, finals[0].code);
 
   const stable = commonPrefix(distinct);

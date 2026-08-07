@@ -33,6 +33,8 @@ describe('continuous code stream panel', () => {
     expect(html).toContain('DARKLO 27');
     expect(html).toContain('data-font="jetbrains-mono"');
     expect(html).toContain('aria-label="完整点划输入流"');
+    expect(html).toContain('data-role="live-tail-strip"');
+    expect(html).toContain('data-role="decoded-output-strip"');
     expect(html).toContain('overflow-x-auto');
     expect(html).toContain('whitespace-nowrap');
   });

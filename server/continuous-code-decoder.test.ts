@@ -28,7 +28,7 @@ describe('streaming continuous code decoder', () => {
   });
 
   it('preserves uncertain pulse diagnostics without adding a symbol', () => {
-    const state = appendPulse(createDecoderState(), { durationMs: 430, endedAt: 1_000 }, config);
+    const state = appendPulse(createDecoderState(), { durationMs: 430, startedAt: 570, endedAt: 1_000 }, config);
     expect(state.pendingSymbols).toBe('');
     expect(state.lastClassification).toBe('uncertain');
     expect(state.uncertainPulseCount).toBe(1);
@@ -37,11 +37,11 @@ describe('streaming continuous code decoder', () => {
 
   it('decodes fluent AT input without inserting automatic spaces', () => {
     let state = createDecoderState();
-    state = appendPulse(state, { durationMs: 250, endedAt: 100 }, config);
-    state = appendPulse(state, { durationMs: 700, endedAt: 300 }, config);
-    state = tickDecoder(state, 1_050, config);
-    state = appendPulse(state, { durationMs: 700, endedAt: 1_200 }, config);
-    state = tickDecoder(state, 2_000, config);
+    state = appendPulse(state, { durationMs: 250, startedAt: 100, endedAt: 350 }, config);
+    state = appendPulse(state, { durationMs: 700, startedAt: 500, endedAt: 1_200 }, config);
+    state = tickDecoder(state, 1_950, config);
+    state = appendPulse(state, { durationMs: 700, startedAt: 2_050, endedAt: 2_750 }, config);
+    state = tickDecoder(state, 3_500, config);
     state = tickDecoder(state, 20_000, config);
 
     expect(state.committedText).toBe('AT');
@@ -50,10 +50,11 @@ describe('streaming continuous code decoder', () => {
 
   it('forces recovery without removing stable output', () => {
     let state = createDecoderState();
-    state = appendPulse(state, { durationMs: 250, endedAt: 100 }, config);
-    state = tickDecoder(state, 900, config);
+    state = appendPulse(state, { durationMs: 250, startedAt: 100, endedAt: 350 }, config);
+    state = tickDecoder(state, 1_050, config);
     for (let index = 0; index < 6; index += 1) {
-      state = appendPulse(state, { durationMs: 250, endedAt: 1_000 + index * 100 }, config);
+      const startedAt = 1_200 + index * 350;
+      state = appendPulse(state, { durationMs: 250, startedAt, endedAt: startedAt + 250 }, config);
     }
     state = forceSplitDecoder(state, 5_000, config);
 
@@ -63,8 +64,8 @@ describe('streaming continuous code decoder', () => {
   });
 
   it('undoes pending input before committed output and resets diagnostics', () => {
-    let state = appendPulse(createDecoderState(), { durationMs: 250, endedAt: 100 }, config);
-    state = appendPulse(state, { durationMs: 700, endedAt: 250 }, config);
+    let state = appendPulse(createDecoderState(), { durationMs: 250, startedAt: 100, endedAt: 350 }, config);
+    state = appendPulse(state, { durationMs: 700, startedAt: 500, endedAt: 1_200 }, config);
     state = undoDecoder(state);
     expect(state.pendingSymbols).toBe('.');
 
@@ -72,5 +73,15 @@ describe('streaming continuous code decoder', () => {
     state = undoDecoder(state);
     expect(state.committedText).toBe('');
     expect(resetDecoder()).toEqual(createDecoderState());
+  });
+
+  it('uses the rest before a long pulse instead of counting pulse duration as a character gap', () => {
+    let state = createDecoderState();
+    state = appendPulse(state, { durationMs: 250, startedAt: 100, endedAt: 350 }, config);
+    state = appendPulse(state, { durationMs: 700, startedAt: 500, endedAt: 1_200 }, config);
+
+    expect(state.committedText).toBe('');
+    expect(state.pendingSymbols).toBe('.-');
+    expect(state.events.filter((event) => event.kind === 'confirmed-boundary')).toHaveLength(0);
   });
 });

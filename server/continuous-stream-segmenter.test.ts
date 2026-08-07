@@ -87,6 +87,24 @@ describe('continuous Morse stream segmenter', () => {
     expect(forced.events.at(-1)).toMatchObject({ kind: 'discarded', reason: 'ambiguous-tail' });
   });
 
+  it('commits a shared candidate prefix without losing the disputed tail', () => {
+    const state = {
+      ...createStreamState(),
+      pendingSymbols: '.',
+      lastSymbolEndedAt: 1_000,
+      candidates: [
+        { committedText: 'A', pendingSymbols: '.', score: 0 },
+        { committedText: 'A', pendingSymbols: '-', score: 0 },
+      ],
+    };
+
+    const advanced = advanceStream(state, 1_800, config);
+    expect(advanced.committedText).toBe('A');
+    expect(advanced.candidates).toHaveLength(2);
+    expect(advanced.pendingSymbols).not.toBe('');
+    expect(advanced.status).toBe('candidate');
+  });
+
   it('undoes pending input before committed output', () => {
     let state = createStreamState();
     state = appendStreamSymbol(state, { symbol: '.', endedAt: 100 }, config);
