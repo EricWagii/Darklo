@@ -18,6 +18,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { trpc } from '@/lib/trpc';
 import { logAuditEvent, AuditEventType } from '@/lib/audit-log';
+import { isPortableRuntime, portableAccountToSession } from '@/lib/portable-runtime';
 
 export interface UserSession {
   userId: number;
@@ -37,7 +38,78 @@ interface UserSessionContextType {
 
 const UserSessionContext = createContext<UserSessionContextType | undefined>(undefined);
 
-export function UserSessionProvider({ children }: { children: React.ReactNode }) {
+function PortableUserSessionProvider({ children }: { children: React.ReactNode }) {
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  useEffect(() => {
+    setCurrentUser(null);
+    setIsInitialized(true);
+    console.log('[便携模式] 使用浏览器本地账户，页面加载时要求主动登录');
+  }, []);
+
+  const login = async (username: string, password: string) => {
+    const { loginUser } = await import('@/lib/user-auth');
+    const result = await loginUser(username, password);
+    if (!result.success || !result.account) {
+      return { success: false, message: result.message };
+    }
+
+    const session = portableAccountToSession(result.account);
+    setCurrentUser(session);
+    logAuditEvent(
+      AuditEventType.USER_LOGIN,
+      { username, runtime: 'portable' },
+      session.userId.toString(),
+      session.userName
+    );
+
+    return { success: true, message: result.message };
+  };
+
+  const register = async (username: string, password: string) => {
+    const { registerUser } = await import('@/lib/user-auth');
+    const result = await registerUser(username, password);
+    if (result.success && result.userId) {
+      logAuditEvent(
+        AuditEventType.USER_REGISTER,
+        { username, runtime: 'portable' },
+        result.userId,
+        username
+      );
+    }
+    return { success: result.success, message: result.message };
+  };
+
+  const logout = async () => {
+    if (currentUser) {
+      logAuditEvent(
+        AuditEventType.USER_LOGOUT,
+        { runtime: 'portable' },
+        currentUser.userId.toString(),
+        currentUser.userName
+      );
+    }
+    setCurrentUser(null);
+  };
+
+  return (
+    <UserSessionContext.Provider
+      value={{
+        currentUser,
+        isLoggedIn: !!currentUser,
+        isInitialized,
+        login,
+        register,
+        logout,
+      }}
+    >
+      {children}
+    </UserSessionContext.Provider>
+  );
+}
+
+function ServerUserSessionProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
 
@@ -186,6 +258,14 @@ export function UserSessionProvider({ children }: { children: React.ReactNode })
       {children}
     </UserSessionContext.Provider>
   );
+}
+
+export function UserSessionProvider({ children }: { children: React.ReactNode }) {
+  if (isPortableRuntime()) {
+    return <PortableUserSessionProvider>{children}</PortableUserSessionProvider>;
+  }
+
+  return <ServerUserSessionProvider>{children}</ServerUserSessionProvider>;
 }
 
 export function useUserSession() {

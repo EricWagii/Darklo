@@ -150,7 +150,29 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
+function portableHtmlPlugin(): Plugin {
+  return {
+    name: "portable-html",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html) {
+        return html.replace(
+          /\s*<script(?:(?!<\/script>)[\s\S])*%VITE_ANALYTICS_ENDPOINT%(?:(?!<\/script>)[\s\S])*<\/script>/g,
+          ""
+        );
+      },
+    },
+  };
+}
+
+const isPortableBuild = process.env.VITE_PORTABLE_MODE === "true";
+const plugins = [
+  react(),
+  tailwindcss(),
+  ...(isPortableBuild
+    ? [portableHtmlPlugin()]
+    : [jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()]),
+];
 
 export default defineConfig({
   plugins,

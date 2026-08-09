@@ -12,6 +12,7 @@
 import { DB_CONFIG } from '@/../../shared/const';
 import { hashPassword, verifyPassword, migratePasswordHash } from './pbkdf2-crypto';
 import { emgDatabase } from './db';
+import { isPortableRuntime, shouldInitializeBrowserAdmin } from './portable-runtime';
 
 export interface UserAccount {
   username: string;
@@ -23,18 +24,14 @@ export interface UserAccount {
 }
 
 const ADMIN_USERNAME = 'Wagii';
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'ADMIN_PASSWORD_NOT_SET';
-
-if (ADMIN_PASSWORD === 'ADMIN_PASSWORD_NOT_SET') {
-  console.error('⚠️ 警告：VITE_ADMIN_PASSWORD 环境变量未设置，请在 .env 文件中配置');
-}
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 
 const MAX_MIGRATION_RETRIES = 3;
 
 /**
  * 初始化管理员账户
  */
-async function initializeAdminAccount() {
+async function initializeAdminAccount(adminPassword: string) {
   try {
     if (!(emgDatabase as any).db) {
       await emgDatabase.init();
@@ -45,7 +42,7 @@ async function initializeAdminAccount() {
     const adminExists = accounts.some(acc => acc.isAdmin);
     
     if (!adminExists) {
-      const adminPasswordHash = await hashPassword(ADMIN_PASSWORD);
+      const adminPasswordHash = await hashPassword(adminPassword);
       const adminAccount: UserAccount = {
         username: ADMIN_USERNAME,
         userId: `admin-${Date.now()}`,
@@ -351,7 +348,9 @@ async function migratePasswordForAccount(
   console.error(`[Auth] 密码迁移失败（用户: ${username}，已重试 ${MAX_MIGRATION_RETRIES} 次）`);
 }
 
-// 初始化管理员账户
-initializeAdminAccount().catch(err => {
-  console.error('Failed to initialize admin account:', err);
-});
+// Only provision an administrator when deployment explicitly supplies a password.
+if (shouldInitializeBrowserAdmin(ADMIN_PASSWORD, isPortableRuntime())) {
+  initializeAdminAccount(ADMIN_PASSWORD).catch(err => {
+    console.error('Failed to initialize admin account:', err);
+  });
+}
