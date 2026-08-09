@@ -14,13 +14,25 @@ const events: StreamEvent[] = [
   { id: '7', kind: 'discarded', at: 1_300, code: '--.', reason: 'ambiguous-tail' },
 ];
 
-const renderPanel = (decodedText: string, status: 'collecting' | 'uncertain') =>
+const renderPanel = (
+  decodedText: string,
+  status: 'collecting' | 'uncertain',
+  isSessionActive = true
+) =>
   renderToStaticMarkup(
     React.createElement(ContinuousCodeStreamPanel, {
       decodedText,
       pendingSymbols: '.',
       events,
       status,
+      isSessionActive,
+      waveform: {
+        rawSamples: [0, 12, -8, 4],
+        envelopeSamples: [0, 5, 9, 3],
+        startThreshold: 8,
+        endThreshold: 4,
+        isActive: false,
+      },
       onForceSplit: () => undefined,
       onUndo: () => undefined,
       onClear: () => undefined,
@@ -35,8 +47,18 @@ describe('continuous code stream panel', () => {
     expect(html).toContain('aria-label="完整点划输入流"');
     expect(html).toContain('data-role="live-tail-strip"');
     expect(html).toContain('data-role="decoded-output-strip"');
+    expect(html).toContain('data-role="typing-caret"');
+    expect(html).toContain('data-role="integrated-emg-waveform"');
+    expect(html).toContain('aria-label="CH2 实时肌电波形"');
     expect(html).toContain('overflow-x-auto');
     expect(html).toContain('whitespace-nowrap');
+    expect(html).not.toContain('code-thread');
+    expect(html).not.toContain('code-dot');
+  });
+
+  it('uses READY only before a decoding session starts', () => {
+    expect(renderPanel('', 'collecting', false)).toContain('READY');
+    expect(renderPanel('', 'collecting', true)).not.toContain('READY');
   });
 
   it('distinguishes pending, committed, uncertain, and discarded events', () => {

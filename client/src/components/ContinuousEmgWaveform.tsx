@@ -95,7 +95,7 @@ export function ContinuousEmgWaveform({
 
     context.font = '13px sans-serif';
     context.fillStyle = '#8b9295';
-    context.fillText('CH2 原始信号', 14, 22);
+    context.fillText('CH2 实时肌电', 14, 22);
     context.fillText('包络与触发阈值', 14, 145);
   }, [rawSamples, envelopeSamples, startThreshold, endThreshold, isActive]);
 
@@ -104,7 +104,7 @@ export function ContinuousEmgWaveform({
       ref={canvasRef}
       width={1000}
       height={260}
-      aria-label="CH2 连续肌电波形"
+      aria-label="CH2 实时肌电波形"
       className="w-full border"
       style={{ borderColor: 'var(--color-border)', aspectRatio: '1000 / 260' }}
     />

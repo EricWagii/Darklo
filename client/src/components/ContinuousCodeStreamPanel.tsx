@@ -1,14 +1,25 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import '@fontsource/jetbrains-mono/400.css';
 import { RotateCcw, Scissors, Undo2 } from 'lucide-react';
+import { ContinuousEmgWaveform } from '@/components/ContinuousEmgWaveform';
 import { Button } from '@/components/PremiumComponents';
 import type { StreamEvent, StreamState } from '@/lib/continuous-stream-segmenter';
+
+interface ContinuousWaveformView {
+  rawSamples: number[];
+  envelopeSamples: number[];
+  startThreshold: number;
+  endThreshold: number;
+  isActive: boolean;
+}
 
 interface ContinuousCodeStreamPanelProps {
   decodedText: string;
   pendingSymbols: string;
   events: readonly StreamEvent[];
   status: StreamState['status'];
+  isSessionActive: boolean;
+  waveform: ContinuousWaveformView;
   onForceSplit: () => void;
   onUndo: () => void;
   onClear: () => void;
@@ -35,6 +46,8 @@ export function ContinuousCodeStreamPanel({
   pendingSymbols,
   events,
   status,
+  isSessionActive,
+  waveform,
   onForceSplit,
   onUndo,
   onClear,
@@ -72,42 +85,34 @@ export function ContinuousCodeStreamPanel({
       data-font="jetbrains-mono"
     >
       <style>{`
-        @keyframes code-thread { from { transform: translateX(-18px) scaleX(.45); opacity: 0; } 35% { opacity: .85; } to { transform: translateX(170px) scaleX(1.25); opacity: 0; } }
-        @keyframes code-dot { from { transform: translateX(0); opacity: 0; } 30% { opacity: .95; } to { transform: translateX(155px); opacity: 0; } }
+        @keyframes terminal-caret { 0%, 46% { opacity: 1; } 47%, 100% { opacity: .12; } }
         @keyframes pending-glow { 0%,100% { text-shadow: 0 0 4px rgba(132,255,80,.45); } 50% { text-shadow: 0 0 11px rgba(132,255,80,.95); } }
       `}</style>
 
       <div className="mb-3 text-[11px] uppercase text-lime-300/65">Biomedical · continuous EMG Morse input</div>
       <div className="border px-4 py-3" style={{ borderColor: '#263226', backgroundColor: '#030704' }}>
         <div className="text-[11px] uppercase text-lime-300/70">Decoded output</div>
-        <div className="mt-3 flex min-h-14 items-center overflow-hidden">
+        <div className="mt-3 flex min-h-14 min-w-0 items-center overflow-hidden">
           <div
             ref={decodedOutputRef}
-            className="min-w-0 max-w-[72%] overflow-x-auto whitespace-nowrap"
+            className="min-w-0 overflow-x-auto whitespace-nowrap"
             data-role="decoded-output-strip"
           >
-            <div className="w-max text-2xl font-normal uppercase text-lime-300 md:text-3xl" style={fontStyle}>
-              {decodedText.toUpperCase() || 'READY'}
+            <div className="flex w-max min-w-0 items-center text-2xl font-normal uppercase text-lime-300 md:text-3xl" style={fontStyle}>
+              <span>{decodedText.toUpperCase() || (isSessionActive ? '' : 'READY')}</span>
+              <span
+                className="ml-1 inline-block h-8 w-[2px] shrink-0 bg-lime-300 shadow-[0_0_9px_rgba(132,255,80,.9)] md:h-9"
+                style={{ animation: 'terminal-caret 1.05s steps(1, end) infinite' }}
+                data-role="typing-caret"
+                aria-hidden="true"
+              />
             </div>
           </div>
-          <div className="ml-2 h-9 w-[2px] shrink-0 bg-lime-300 shadow-[0_0_9px_rgba(132,255,80,.9)]" />
-          <div className="relative h-10 min-w-36 flex-1 overflow-hidden" aria-hidden="true">
-            {[0, 1, 2, 3, 4].map((index) => (
-              <span
-                key={`thread-${index}`}
-                className="absolute left-0 h-px w-28 bg-lime-400/70"
-                style={{ top: `${8 + index * 6}px`, animation: `code-thread ${1.7 + index * 0.21}s linear ${index * 0.18}s infinite` }}
-              />
-            ))}
-            {[0, 1, 2, 3].map((index) => (
-              <span
-                key={`dot-${index}`}
-                className="absolute left-2 h-1 w-1 rounded-full bg-lime-200 shadow-[0_0_6px_rgba(180,255,130,.9)]"
-                style={{ top: `${9 + index * 7}px`, animation: `code-dot ${1.9 + index * 0.17}s linear ${index * 0.33}s infinite` }}
-              />
-            ))}
-          </div>
         </div>
+      </div>
+
+      <div className="mt-3" data-role="integrated-emg-waveform">
+        <ContinuousEmgWaveform {...waveform} />
       </div>
 
       <div

@@ -10,7 +10,6 @@ import {
   SectionLabel,
   SectionTitle,
 } from '@/components/PremiumComponents';
-import { ContinuousEmgWaveform } from '@/components/ContinuousEmgWaveform';
 import { ContinuousCodeStreamPanel } from '@/components/ContinuousCodeStreamPanel';
 import { ContinuousSessionReview } from '@/components/ContinuousSessionReview';
 import { useSerialConnectionContext } from '@/contexts/SerialConnectionContext';
@@ -490,16 +489,6 @@ export default function ContinuousCodeMode() {
           </div>
 
           <Card className="mb-6">
-            <ContinuousEmgWaveform
-              rawSamples={rawSamples}
-              envelopeSamples={envelopeSamples}
-              startThreshold={detectorSnapshot.startThreshold}
-              endThreshold={detectorSnapshot.endThreshold}
-              isActive={detectorSnapshot.isActive}
-            />
-          </Card>
-
-          <Card className="mb-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <div className="label mb-2">会话校准</div>
@@ -574,6 +563,14 @@ export default function ContinuousCodeMode() {
               pendingSymbols={decoder.pendingSymbols}
               events={decoder.events}
               status={decoder.status}
+              isSessionActive={phase === 'decoding' || phase === 'paused'}
+              waveform={{
+                rawSamples,
+                envelopeSamples,
+                startThreshold: detectorSnapshot.startThreshold,
+                endThreshold: detectorSnapshot.endThreshold,
+                isActive: detectorSnapshot.isActive,
+              }}
               onForceSplit={() => decoderConfig && setDecoder((current) => forceSplitDecoder(current, Date.now(), decoderConfig))}
               onUndo={() => setDecoder(undoDecoder)}
               onClear={() => {
@@ -632,13 +629,21 @@ export default function ContinuousCodeMode() {
         <Section className="pt-0">
           <SectionLabel number="02">REFERENCE</SectionLabel>
           <SectionTitle subtitle="点和划采用国际通用摩斯编码。">摩斯电码对照表</SectionTitle>
-          <div className="grid grid-cols-6 gap-3 max-lg:grid-cols-4 max-md:grid-cols-2">
-            {MORSE_ENTRIES.map(({ character, code }) => (
-              <Card key={character} className="p-4">
-                <div className="text-accent text-xl font-bold">{character}</div>
-                <div className="font-mono mt-2" style={{ letterSpacing: 0 }}>{code}</div>
-              </Card>
-            ))}
+          <div className="overflow-x-auto border" style={{ borderColor: 'var(--color-border)' }} data-role="compact-morse-reference">
+            <table className="w-full min-w-[720px] table-fixed border-collapse font-mono" style={{ letterSpacing: 0 }}>
+              <tbody>
+                {Array.from({ length: Math.ceil(MORSE_ENTRIES.length / 6) }, (_, rowIndex) => (
+                  <tr key={rowIndex} className="border-b last:border-b-0" style={{ borderColor: 'var(--color-border)' }}>
+                    {MORSE_ENTRIES.slice(rowIndex * 6, rowIndex * 6 + 6).map(({ character, code }) => (
+                      <td key={character} className="px-4 py-2.5">
+                        <span className="mr-3 font-bold text-accent">{character}</span>
+                        <span className="text-sm text-secondary">{code}</span>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Section>
       </Container>
