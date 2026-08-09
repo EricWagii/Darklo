@@ -79,6 +79,7 @@ describe('complete EMG diagnostic exports', () => {
       sourceChannel: 'CH2',
       phase: 'decoding',
       paceMode: 'slow',
+      evaluationProtocol: { mode: 'scripted', targetText: 'A' },
       decoderConfig: null,
       calibration: null,
       baselineSamples: [],
@@ -87,10 +88,26 @@ describe('complete EMG diagnostic exports', () => {
       longDurationsMs: [],
       decoder: { committedText: 'A', pendingSymbols: '', events: [] },
       timeline: [],
+      evaluation: {
+        mode: 'scripted',
+        targetText: 'A',
+        predictedText: 'A',
+        actualText: 'A',
+        verdict: 'correct',
+        includeInAccuracy: true,
+        submittedAt: 100,
+        metrics: { referenceLength: 1, predictedLength: 1, editDistance: 0, cer: 0, characterAccuracy: 1, exactMatch: true },
+        alignment: [{ type: 'match', expected: 'A', predicted: 'A', expectedIndex: 0, predictedIndex: 0 }],
+        eventCorrections: [],
+      },
     });
 
     expect(payload.sourcePage).toBe('continuous-neuromuscular-decoder');
+    expect(payload.session.evaluationProtocol).toEqual({ mode: 'scripted', targetText: 'A' });
     expect(payload.sampleCapture.captureTruncated).toBe(true);
     expect(payload.sampleCapture.columns.ch3).toEqual([30, 31]);
+    expect(payload.evaluation?.targetText).toBe('A');
+    expect(payload.evaluation?.metrics.characterAccuracy).toBe(1);
+    expect(payload.evaluation?.includeInAccuracy).toBe(true);
   });
 });

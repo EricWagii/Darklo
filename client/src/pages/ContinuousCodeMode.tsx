@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'wouter';
-import { ArrowLeft, Download, Pause, Play, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Download, Pause, Play, RotateCcw, Square } from 'lucide-react';
 import {
   Button,
   Card,
@@ -12,6 +12,7 @@ import {
 } from '@/components/PremiumComponents';
 import { ContinuousEmgWaveform } from '@/components/ContinuousEmgWaveform';
 import { ContinuousCodeStreamPanel } from '@/components/ContinuousCodeStreamPanel';
+import { ContinuousSessionReview } from '@/components/ContinuousSessionReview';
 import { useSerialConnectionContext } from '@/contexts/SerialConnectionContext';
 import {
   appendPulse,
@@ -41,6 +42,17 @@ import {
   createContinuousSampleCapture,
   downloadDiagnosticJson,
 } from '@/lib/emg-diagnostic-export';
+import {
+  buildContinuousSessionEvaluation,
+  normalizeEvaluationText,
+  upsertEventCorrection,
+  type ContinuousEvaluationMode,
+  type ContinuousEventCorrection,
+  type ContinuousReviewVerdict,
+  type ContinuousSessionEvaluation,
+  type EventCorrectionLabel,
+} from '@/lib/continuous-session-evaluation';
+import type { StreamEvent } from '@/lib/continuous-stream-segmenter';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 type SessionPhase =
@@ -118,6 +130,12 @@ export default function ContinuousCodeMode() {
   const lastTimestampRef = useRef(0);
   const continuousCaptureRef = useRef(createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES));
   const [captureSampleCount, setCaptureSampleCount] = useState(0);
+  const [evaluationMode, setEvaluationMode] = useState<ContinuousEvaluationMode>('scripted');
+  const [targetText, setTargetText] = useState('');
+  const [actualText, setActualText] = useState('');
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [sessionEvaluation, setSessionEvaluation] = useState<ContinuousSessionEvaluation | null>(null);
+  const [eventCorrections, setEventCorrections] = useState<ContinuousEventCorrection[]>([]);
 
   const setPhase = useCallback((next: SessionPhase) => {
     phaseRef.current = next;
@@ -176,6 +194,10 @@ export default function ContinuousCodeMode() {
     detectorRef.current = null;
     setDecoder(resetDecoder());
     setTimeline([]);
+    setActualText('');
+    setReviewOpen(false);
+    setSessionEvaluation(null);
+    setEventCorrections([]);
     setBaselineProgress(0);
     setDetectorSnapshot(emptySnapshot);
     setPhase('baseline');
@@ -208,10 +230,18 @@ export default function ContinuousCodeMode() {
 
   const startDecoding = useCallback(() => {
     if (!calibrationRef.current) return;
+    if (evaluationMode === 'scripted' && !targetText) return;
+    if (phaseRef.current === 'ready') {
+      setDecoder(resetDecoder());
+      setActualText('');
+      setReviewOpen(false);
+      setSessionEvaluation(null);
+      setEventCorrections([]);
+    }
     detectorRef.current = new ContinuousEmgDetector(calibrationRef.current.detectorConfig);
     setPhase('decoding');
     addTimeline({ at: Date.now(), kind: 'system', message: '开始连续解码' });
-  }, [addTimeline, setPhase]);
+  }, [addTimeline, evaluationMode, setPhase, targetText]);
 
   useEffect(() => {
     const busy = phase === 'baseline' || phase === 'shortCalibration' || phase === 'longCalibration' || phase === 'decoding';
@@ -337,6 +367,56 @@ export default function ContinuousCodeMode() {
     }
   };
 
+  const finishSession = () => {
+    const now = Date.now();
+    const finalizedDecoder = decoderConfig
+      ? forceSplitDecoder(decoder, now, decoderConfig)
+      : decoder;
+    setDecoder(finalizedDecoder);
+    setPhase('paused');
+    setActualText(evaluationMode === 'scripted' ? targetText : finalizedDecoder.committedText);
+    setReviewOpen(true);
+    addTimeline({ at: now, kind: 'system', message: '会话结束，等待真实标签复核' });
+  };
+
+  const submitEvaluation = (verdict: ContinuousReviewVerdict) => {
+    const predictedText = decoder.committedText;
+    const resolvedActualText = verdict === 'correct'
+      ? evaluationMode === 'scripted' ? targetText : predictedText
+      : actualText;
+    const evaluation = buildContinuousSessionEvaluation({
+      mode: evaluationMode,
+      targetText,
+      predictedText,
+      actualText: resolvedActualText,
+      verdict,
+      eventCorrections,
+    });
+    setActualText(evaluation.actualText);
+    setSessionEvaluation(evaluation);
+    setReviewOpen(false);
+    addTimeline({
+      at: evaluation.submittedAt,
+      kind: verdict === 'rejected' ? 'blocked' : 'system',
+      message: verdict === 'correct' ? '真实标签确认：识别正确' : verdict === 'corrected' ? '真实标签确认：已提交修正' : '本次会话已标记无效',
+    });
+  };
+
+  const correctEvent = (event: StreamEvent, label: EventCorrectionLabel | null) => {
+    setEventCorrections((current) => {
+      const next = label
+        ? upsertEventCorrection(current, {
+            eventId: event.id,
+            originalKind: event.kind,
+            correctedLabel: label,
+            correctedAt: Date.now(),
+          })
+        : current.filter((correction) => correction.eventId !== event.id);
+      setSessionEvaluation((evaluation) => evaluation ? { ...evaluation, eventCorrections: next } : evaluation);
+      return next;
+    });
+  };
+
   const exportSession = () => {
     if (continuousCaptureRef.current.columns.timestamps.length === 0) return;
     const payload = buildContinuousDiagnosticPackage({
@@ -345,6 +425,7 @@ export default function ContinuousCodeMode() {
       sourceChannel: 'CH2',
       phase,
       paceMode,
+      evaluationProtocol: { mode: evaluationMode, targetText },
       decoderConfig,
       calibration,
       baselineSamples: baselineSamplesRef.current,
@@ -353,6 +434,7 @@ export default function ContinuousCodeMode() {
       longDurationsMs: longDurationsRef.current,
       decoder,
       timeline: [...timeline].reverse(),
+      evaluation: sessionEvaluation,
     });
     downloadDiagnosticJson(payload, 'continuous-neuromuscular-decoder-complete-diagnostic');
   };
@@ -449,6 +531,25 @@ export default function ContinuousCodeMode() {
           </Card>
 
           <Card className="mb-8">
+            <ContinuousSessionReview
+              mode={evaluationMode}
+              targetText={targetText}
+              predictedText={decoder.committedText}
+              actualText={actualText}
+              reviewOpen={reviewOpen}
+              locked={phase === 'decoding'}
+              evaluation={sessionEvaluation}
+              events={decoder.events}
+              eventCorrections={eventCorrections}
+              onModeChange={setEvaluationMode}
+              onTargetTextChange={(value) => setTargetText(normalizeEvaluationText(value))}
+              onActualTextChange={setActualText}
+              onSubmit={submitEvaluation}
+              onEventCorrection={correctEvent}
+            />
+          </Card>
+
+          <Card className="mb-8">
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="label mb-2">流式解码</div>
@@ -456,13 +557,16 @@ export default function ContinuousCodeMode() {
               </div>
               <div className="flex gap-2">
                 {phase !== 'decoding' ? (
-                  <Button variant="success" disabled={!calibrationReady} onClick={startDecoding}>
+                  <Button variant="success" disabled={!calibrationReady || (evaluationMode === 'scripted' && !targetText)} onClick={startDecoding}>
                     <Play size={16} className="inline mr-2" />开始
                   </Button>
                 ) : (
                   <Button onClick={() => setPhase('paused')}><Pause size={16} className="inline mr-2" />暂停</Button>
                 )}
-                <Button disabled={phase !== 'paused'} onClick={startDecoding}><Play size={16} className="inline mr-2" />继续</Button>
+                <Button disabled={phase !== 'paused' || reviewOpen || Boolean(sessionEvaluation)} onClick={startDecoding}><Play size={16} className="inline mr-2" />继续</Button>
+                <Button variant="primary" disabled={(phase !== 'decoding' && phase !== 'paused') || reviewOpen || Boolean(sessionEvaluation)} onClick={finishSession}>
+                  <Square size={15} className="inline mr-2" />结束并复核
+                </Button>
               </div>
             </div>
             <ContinuousCodeStreamPanel
@@ -472,7 +576,13 @@ export default function ContinuousCodeMode() {
               status={decoder.status}
               onForceSplit={() => decoderConfig && setDecoder((current) => forceSplitDecoder(current, Date.now(), decoderConfig))}
               onUndo={() => setDecoder(undoDecoder)}
-              onClear={() => setDecoder(resetDecoder())}
+              onClear={() => {
+                setDecoder(resetDecoder());
+                setActualText('');
+                setReviewOpen(false);
+                setSessionEvaluation(null);
+                setEventCorrections([]);
+              }}
             />
             {decoder.status === 'uncertain' && <p className="mt-4 text-amber-300">当前尾段存在时序或动作歧义，系统不会猜测；可继续输入、撤销或使用长静息收口。</p>}
             {decoder.status === 'discarded' && <p className="mt-4 text-orange-500">未决尾段无法可靠解码，已舍弃；此前确认文本保持不变。</p>}

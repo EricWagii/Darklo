@@ -22,6 +22,10 @@ describe('diagnostic export controls', () => {
     expect(source).toContain('channel1');
     expect(source).toContain('channel2');
     expect(source).toContain('channel3');
+    expect(source).toContain('ContinuousSessionReview');
+    expect(source).toContain('buildContinuousSessionEvaluation');
+    expect(source).toContain('evaluation: sessionEvaluation');
+    expect(source).toContain('结束并复核');
     expect(source).toContain('连续神经肌电时序解码');
     expect(source).toContain('基于个体化生物电校准，实现实时事件分割、时序编码与流式字符输出。');
     expect(source).not.toContain('长咬、短咬与停顿输入');

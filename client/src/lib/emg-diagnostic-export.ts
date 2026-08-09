@@ -1,3 +1,5 @@
+import type { ContinuousSessionEvaluation } from './continuous-session-evaluation';
+
 export interface ThreeChannelWaveform {
   ch1: number[];
   ch2: number[];
@@ -128,6 +130,10 @@ export const buildContinuousDiagnosticPackage = (input: {
   sourceChannel: string;
   phase: string;
   paceMode: string;
+  evaluationProtocol?: {
+    mode: string;
+    targetText: string;
+  };
   decoderConfig: unknown;
   calibration: unknown;
   baselineSamples: number[];
@@ -136,6 +142,7 @@ export const buildContinuousDiagnosticPackage = (input: {
   longDurationsMs: number[];
   decoder: unknown;
   timeline: unknown[];
+  evaluation?: ContinuousSessionEvaluation | null;
 }) => ({
   exportFormat: 'darklo-emg-complete-diagnostic',
   version: '2.0',
@@ -146,6 +153,7 @@ export const buildContinuousDiagnosticPackage = (input: {
   session: {
     phase: input.phase,
     paceMode: input.paceMode,
+    evaluationProtocol: input.evaluationProtocol ?? null,
     decoderConfig: input.decoderConfig,
   },
   calibration: {
@@ -157,6 +165,7 @@ export const buildContinuousDiagnosticPackage = (input: {
   },
   decoder: input.decoder,
   timeline: input.timeline,
+  evaluation: input.evaluation ?? null,
   sampleCapture: input.capture,
 });
 
