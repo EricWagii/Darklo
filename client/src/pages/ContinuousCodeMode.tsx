@@ -438,7 +438,37 @@ export default function ContinuousCodeMode() {
     downloadDiagnosticJson(payload, 'continuous-neuromuscular-decoder-complete-diagnostic');
   };
 
-  const calibrationReady = Boolean(calibration);
+  const targetTextRequired = evaluationMode === 'scripted' && !targetText;
+  const streamStandbyLabel = ({
+    idle: 'CALIBRATE',
+    baseline: 'BASELINE',
+    shortCalibration: 'SHORT CAL',
+    longCalibration: 'LONG CAL',
+    ready: 'READY',
+    decoding: '',
+    paused: 'PAUSED',
+  } satisfies Record<SessionPhase, string>)[phase];
+  const sessionActionHint = !serial.isConnected
+    ? '请先连接硬件，再完成个体化校准。'
+    : phase === 'idle'
+      ? '首次使用需先完成静息、短时和长时事件校准。'
+      : phase === 'baseline'
+        ? `请保持放松，正在采集 3 秒静息基线（${Math.round(baselineProgress)}%）。`
+        : phase === 'shortCalibration'
+          ? `请完成至少 ${CALIBRATION_TARGET} 次短时肌电事件，当前 ${shortDurations.length} 次。`
+          : phase === 'longCalibration'
+            ? `请完成至少 ${CALIBRATION_TARGET} 次长时肌电事件，当前 ${longDurations.length} 次。`
+            : phase === 'ready' && targetTextRequired
+              ? '请先输入目标文本。'
+              : phase === 'ready'
+                ? '校准完成，可以开始解码。'
+                : phase === 'decoding'
+                  ? '正在持续解码。'
+                  : reviewOpen
+                    ? '会话已结束，请完成真实标签复核。'
+                    : sessionEvaluation
+                      ? '本次会话已完成并保存复核结果。'
+                      : '会话已暂停。';
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -496,7 +526,7 @@ export default function ContinuousCodeMode() {
               </div>
               <div className="flex flex-wrap gap-3">
                 <Button variant="primary" disabled={!serial.isConnected || phase === 'baseline'} onClick={startBaseline}>
-                  <RotateCcw size={16} className="inline mr-2" />重新校准
+                  <RotateCcw size={16} className="inline mr-2" />{phase === 'idle' ? '开始校准' : '重新校准'}
                 </Button>
                 {phase === 'shortCalibration' && (
                   <Button variant="success" disabled={shortDurations.length < CALIBRATION_TARGET} onClick={startLongCalibration}>
@@ -544,18 +574,36 @@ export default function ContinuousCodeMode() {
                 <div className="label mb-2">流式解码</div>
                 <div className="text-secondary text-sm">自适应解析生物电事件持续特征与时序边界，连续生成编码序列。</div>
               </div>
-              <div className="flex gap-2">
-                {phase !== 'decoding' ? (
-                  <Button variant="success" disabled={!calibrationReady || (evaluationMode === 'scripted' && !targetText)} onClick={startDecoding}>
-                    <Play size={16} className="inline mr-2" />开始
-                  </Button>
-                ) : (
-                  <Button onClick={() => setPhase('paused')}><Pause size={16} className="inline mr-2" />暂停</Button>
-                )}
-                <Button disabled={phase !== 'paused' || reviewOpen || Boolean(sessionEvaluation)} onClick={startDecoding}><Play size={16} className="inline mr-2" />继续</Button>
-                <Button variant="primary" disabled={(phase !== 'decoding' && phase !== 'paused') || reviewOpen || Boolean(sessionEvaluation)} onClick={finishSession}>
-                  <Square size={15} className="inline mr-2" />结束并复核
-                </Button>
+              <div className="flex flex-col items-end gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
+                  {phase === 'idle' && (
+                    <Button variant="primary" disabled={!serial.isConnected} onClick={startBaseline}>
+                      <RotateCcw size={16} className="inline mr-2" />开始校准
+                    </Button>
+                  )}
+                  {phase === 'baseline' && <Button disabled>正在采集静息基线</Button>}
+                  {phase === 'shortCalibration' && <Button disabled>短时事件校准中</Button>}
+                  {phase === 'longCalibration' && <Button disabled>长时事件校准中</Button>}
+                  {phase === 'ready' && (
+                    <Button variant="success" disabled={targetTextRequired} onClick={startDecoding}>
+                      <Play size={16} className="inline mr-2" />开始解码
+                    </Button>
+                  )}
+                  {phase === 'decoding' && (
+                    <Button onClick={() => setPhase('paused')}><Pause size={16} className="inline mr-2" />暂停</Button>
+                  )}
+                  {phase === 'paused' && !reviewOpen && !sessionEvaluation && (
+                    <Button variant="success" onClick={startDecoding}><Play size={16} className="inline mr-2" />继续</Button>
+                  )}
+                  {(phase === 'decoding' || phase === 'paused') && !reviewOpen && !sessionEvaluation && (
+                    <Button variant="primary" onClick={finishSession}>
+                      <Square size={15} className="inline mr-2" />结束并复核
+                    </Button>
+                  )}
+                  {reviewOpen && <Button disabled>等待复核</Button>}
+                  {sessionEvaluation && <Button disabled>本次已完成</Button>}
+                </div>
+                <div className="max-w-xl text-right text-xs text-secondary" role="status">{sessionActionHint}</div>
               </div>
             </div>
             <ContinuousCodeStreamPanel
@@ -563,7 +611,7 @@ export default function ContinuousCodeMode() {
               pendingSymbols={decoder.pendingSymbols}
               events={decoder.events}
               status={decoder.status}
-              isSessionActive={phase === 'decoding' || phase === 'paused'}
+              standbyLabel={streamStandbyLabel}
               waveform={{
                 rawSamples,
                 envelopeSamples,

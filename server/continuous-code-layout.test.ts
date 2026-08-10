@@ -17,4 +17,12 @@ describe('continuous code page layout', () => {
     expect(source).toContain('data-role="compact-morse-reference"');
     expect(source).not.toContain('<Card key={character}');
   });
+
+  it('guides an uncalibrated session instead of silently disabling Start', () => {
+    const source = readSource('client/src/pages/ContinuousCodeMode.tsx');
+    expect(source).toContain('开始校准');
+    expect(source).toContain('开始解码');
+    expect(source).toContain('standbyLabel={streamStandbyLabel}');
+    expect(source).not.toContain('disabled={!calibrationReady || (evaluationMode === \'scripted\' && !targetText)}');
+  });
 });

@@ -17,7 +17,7 @@ const events: StreamEvent[] = [
 const renderPanel = (
   decodedText: string,
   status: 'collecting' | 'uncertain',
-  isSessionActive = true
+  standbyLabel = ''
 ) =>
   renderToStaticMarkup(
     React.createElement(ContinuousCodeStreamPanel, {
@@ -25,7 +25,7 @@ const renderPanel = (
       pendingSymbols: '.',
       events,
       status,
-      isSessionActive,
+      standbyLabel,
       waveform: {
         rawSamples: [0, 12, -8, 4],
         envelopeSamples: [0, 5, 9, 3],
@@ -56,9 +56,10 @@ describe('continuous code stream panel', () => {
     expect(html).not.toContain('code-dot');
   });
 
-  it('uses READY only before a decoding session starts', () => {
-    expect(renderPanel('', 'collecting', false)).toContain('READY');
-    expect(renderPanel('', 'collecting', true)).not.toContain('READY');
+  it('shows the standby label supplied by the real session phase', () => {
+    expect(renderPanel('', 'collecting', 'CALIBRATE')).toContain('CALIBRATE');
+    expect(renderPanel('', 'collecting', 'READY')).toContain('READY');
+    expect(renderPanel('', 'collecting')).not.toContain('READY');
   });
 
   it('distinguishes pending, committed, uncertain, and discarded events', () => {

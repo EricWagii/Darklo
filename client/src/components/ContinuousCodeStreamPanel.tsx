@@ -18,7 +18,7 @@ interface ContinuousCodeStreamPanelProps {
   pendingSymbols: string;
   events: readonly StreamEvent[];
   status: StreamState['status'];
-  isSessionActive: boolean;
+  standbyLabel: string;
   waveform: ContinuousWaveformView;
   onForceSplit: () => void;
   onUndo: () => void;
@@ -46,7 +46,7 @@ export function ContinuousCodeStreamPanel({
   pendingSymbols,
   events,
   status,
-  isSessionActive,
+  standbyLabel,
   waveform,
   onForceSplit,
   onUndo,
@@ -99,7 +99,7 @@ export function ContinuousCodeStreamPanel({
             data-role="decoded-output-strip"
           >
             <div className="flex w-max min-w-0 items-center text-2xl font-normal uppercase text-lime-300 md:text-3xl" style={fontStyle}>
-              <span>{decodedText.toUpperCase() || (isSessionActive ? '' : 'READY')}</span>
+              <span>{decodedText.toUpperCase() || standbyLabel}</span>
               <span
                 className="ml-1 inline-block h-8 w-[2px] shrink-0 bg-lime-300 shadow-[0_0_9px_rgba(132,255,80,.9)] md:h-9"
                 style={{ animation: 'terminal-caret 1.05s steps(1, end) infinite' }}
