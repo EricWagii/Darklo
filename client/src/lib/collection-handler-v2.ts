@@ -15,10 +15,15 @@ import {
   canSave
 } from './collection-integration';
 import { dataChangeEventManager } from './data-change-events';
+import {
+  getCollectionCommandBatchConflict,
+  normalizeCollectionCommandName,
+} from './collection-command-session';
 
 export interface CollectionHandlerConfig {
   commandName: string;
   collectionHistory: Array<{
+    commandName?: string;
     index?: number;
     timestamp: Date;
     waveform: {
@@ -65,6 +70,7 @@ export function buildPersistedCollectionRecord(params: {
 }) {
   const now = params.now ?? Date.now();
   const wf = params.waveform;
+  const sourceCommandName = normalizeCollectionCommandName(params.source?.commandName || '');
   return {
     id: `col-${now}-${params.index}-${Math.random().toString(36).substr(2, 9)}`,
     index: params.index,
@@ -72,6 +78,7 @@ export function buildPersistedCollectionRecord(params: {
     waveform: { ch1: wf.ch1, ch2: wf.ch2, ch3: wf.ch3 },
     userId: params.currentUser.userId,
     userName: params.currentUser.userName,
+    ...(sourceCommandName ? { commandName: sourceCommandName } : {}),
     croppingMeta: wf.meta.croppingMeta,
     normalizationMeta: wf.meta.normalizationMeta,
     pipelineMetadata: wf.meta.pipelineMetadata,
@@ -106,6 +113,11 @@ export async function handleCompleteCollectionV2(
 
     if (collectionHistory.length === 0) {
       return { success: false, message: '请先采集数据' };
+    }
+
+    const commandConflict = getCollectionCommandBatchConflict(commandName, collectionHistory);
+    if (commandConflict) {
+      return { success: false, message: commandConflict };
     }
 
     if (!currentUser) {
@@ -286,6 +298,7 @@ export async function handleSaveAfterAnomalyRemoval(
 ): Promise<CollectionHandlerResult> {
   const {
     commandName,
+    collectionHistory,
     currentUser,
     emgDatabase,
     logger,
@@ -294,8 +307,15 @@ export async function handleSaveAfterAnomalyRemoval(
   } = config;
 
   try {
+    const commandConflict = getCollectionCommandBatchConflict(commandName, collectionHistory);
+    if (commandConflict) {
+      return { success: false, message: commandConflict };
+    }
+
     // 删除异常波形
     const filteredWaveforms = removeAnomalies(processedWaveforms, indicesToRemove);
+    const removedIndices = new Set(indicesToRemove);
+    const filteredSources = collectionHistory.filter((_, index) => !removedIndices.has(index));
 
     if (filteredWaveforms.length === 0) {
       return {
@@ -313,6 +333,7 @@ export async function handleSaveAfterAnomalyRemoval(
     const collectionsToSave = filteredWaveforms.map((wf, idx) =>
       buildPersistedCollectionRecord({
         waveform: wf,
+        source: filteredSources[idx],
         index: nextIndex + idx,
         currentUser,
       })

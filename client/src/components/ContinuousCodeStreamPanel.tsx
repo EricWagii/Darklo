@@ -42,6 +42,21 @@ const eventSymbol = (event: StreamEvent) => {
   return null;
 };
 
+const eventHistoryMark = (event: StreamEvent) => {
+  if (event.kind !== 'symbol-pending') return eventSymbol(event);
+
+  const isDot = event.symbol === '.';
+  return (
+    <span
+      className={isDot
+        ? 'inline-block h-2 w-2 rounded-full bg-current'
+        : 'inline-block h-[3px] w-7 rounded-[1px] bg-current'}
+      data-event-symbol={isDot ? 'dot' : 'dash'}
+      aria-label={isDot ? '点' : '划'}
+    />
+  );
+};
+
 export function ContinuousCodeStreamPanel({
   decodedText,
   tentativeText,
@@ -177,12 +192,12 @@ export function ContinuousCodeStreamPanel({
                       : 'text-emerald-200/45';
               const latest = pending && streamEvent.id === latestPendingId;
               return (
-                <span key={streamEvent.id} className="inline-flex w-12 shrink-0 flex-col items-center" data-state={state} data-latest={latest || undefined}>
+                <span key={streamEvent.id} className="inline-flex w-14 shrink-0 flex-col items-center" data-state={state} data-latest={latest || undefined}>
                   <span
-                    className={`h-5 text-sm leading-5 ${color}`}
+                    className={`flex h-5 items-center justify-center text-sm leading-5 ${color}`}
                     style={latest ? { animation: 'pending-glow 1s ease-in-out infinite' } : undefined}
                   >
-                    {eventSymbol(streamEvent)}
+                    {eventHistoryMark(streamEvent)}
                   </span>
                   <span className="mt-1 text-[8px] text-emerald-200/35">{formatTime(streamEvent.at)}</span>
                 </span>

@@ -12,6 +12,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'wouter';
+import { LockKeyhole, Save, Trash2 } from 'lucide-react';
 import {
   Container,
   Section,
@@ -67,6 +68,10 @@ import { operationLogger } from '@/lib/operation-logger';
 import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import {
+  isCollectionCommandInputLocked,
+  resolveCollectionSessionCommand,
+} from '@/lib/collection-command-session';
+import {
   handleCompleteCollectionV2,
   handleSaveAfterAnomalyRemoval,
   type CollectionHandlerConfig
@@ -92,6 +97,7 @@ const handleExportLog = () => {
 
 interface CollectionData {
   id: string;  // UUID主键，不会因为削除而错位
+  commandName: string; // 采集当时的不可变指令归属，防止跨指令混合保存
   index: number;
   timestamp: Date;
   waveform: { ch1: number[]; ch2: number[]; ch3: number[] };
@@ -184,6 +190,7 @@ export default function CollectionMode() {
   const [globalElectrodeBaseline, setGlobalElectrodeBaseline] = useState<any>(null);
 
   const [commandName, setCommandName] = useState('');
+  const [sessionCommandName, setSessionCommandName] = useState<string | null>(null);
   const [isCollecting, setIsCollecting] = useState(false);
   const [collectionCount, setCollectionCount] = useState(0);
   const [collectionHistory, setCollectionHistory] = useState<CollectionData[]>([]);
@@ -210,6 +217,14 @@ export default function CollectionMode() {
   const [isAppendingMode, setIsAppendingMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);  // 防止重复点击
   const [commandExists, setCommandExists] = useState(false);
+  const activeCommandName = resolveCollectionSessionCommand(commandName, sessionCommandName);
+  const isCommandInputLocked = isCollectionCommandInputLocked({
+    sessionCommandName,
+    unsavedCount: collectionHistory.length,
+    isCollecting,
+    countdownTime,
+    isSaving,
+  });
 
   // ✅ 修复：监听commandName变化，检查指令是否存在
   useEffect(() => {
@@ -273,6 +288,7 @@ export default function CollectionMode() {
       if (event.type === DataChangeEventType.ALL_DATA_CLEARED) {
         setCollectionHistory([]);
         setCollectionCount(0);
+        setSessionCommandName(null);
         setQualityScores([]);
         setPendingCollections([]);
         setGlobalElectrodeBaseline(null);
@@ -344,6 +360,9 @@ export default function CollectionMode() {
       }));
     setCollectionHistory(newHistory);
     setCollectionCount(newHistory.length);
+    if (newHistory.length === 0) {
+      setSessionCommandName(null);
+    }
     setQualityScores(buildQualityScoresForHistory(newHistory));
     const collectionIndex = deletedCollection ? deletedDisplayIndex : '?';
     toast.success(`已削除采集 #${collectionIndex}`);
@@ -476,8 +495,17 @@ export default function CollectionMode() {
 
   // 开始采集
   const handleStartCollection = () => {
-    if (!commandName.trim()) {
+    const requestedCommandName = commandName.trim();
+    const batchCommandName = resolveCollectionSessionCommand(requestedCommandName, sessionCommandName);
+
+    if (!batchCommandName) {
       setError('请输入指令名称');
+      return;
+    }
+
+    if (sessionCommandName && requestedCommandName !== sessionCommandName) {
+      setCommandName(sessionCommandName);
+      setError(`当前未保存批次已绑定指令“${sessionCommandName}”，请先保存或丢弃后再更换指令`);
       return;
     }
 
@@ -542,6 +570,12 @@ export default function CollectionMode() {
       return;
     }
 
+    const capturedCommandName = resolveCollectionSessionCommand(commandName, sessionCommandName);
+    if (!capturedCommandName) {
+      setError('本次采集未绑定指令，请重新输入指令后采集');
+      return;
+    }
+
     // 执行统一的波形处理流程：滤波降噪 -> 裁剪空白 -> 统一缩放
     const pipelineConfig: WaveformPipelineConfig = {
       targetLength: FIXED_WAVEFORM_LENGTH || 512,
@@ -569,6 +603,7 @@ export default function CollectionMode() {
     // 保存采集（使用处理后的波形）
     const newCollection: CollectionData = {
       id: generateUUID(),  // 问题3.1修复：UUID主键
+      commandName: capturedCommandName,
       index: collectionHistory.length + 1,
       timestamp: new Date(),
       waveform: processedWaveform,
@@ -591,12 +626,14 @@ export default function CollectionMode() {
     const rawDurationMs = (currentWaveform.ch1.length / 500) * 1000;
     console.log(`[采集 #${newCollection.index}] 原始波形长度: ${currentWaveform.ch1.length} 样本 (${rawDurationMs.toFixed(0)}ms)`);
     console.log(`[采集 #${newCollection.index}] 计时器时长: ${collectionTime}ms`);
-    console.log(`[采集 #${newCollection.index}] 指令: ${commandName || '未设置'}`);
+    console.log(`[采集 #${newCollection.index}] 指令: ${capturedCommandName}`);
     console.log(`[采集 #${newCollection.index}] 处理流程: ${pipelineResult.metadata.steps.join(' -> ')}`);
     console.log(`[采集 #${newCollection.index}] 处理流程评分: ${qualityScore.toFixed(1)}/100`);
 
     setCollectionHistory([...collectionHistory, newCollection]);
     setCollectionCount(collectionCount + 1);
+    setSessionCommandName(capturedCommandName);
+    setCommandName(capturedCommandName);
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
     setCollectionTime(0);
     setError(null);
@@ -650,6 +687,12 @@ export default function CollectionMode() {
       setIsSaving(true);
       toast.loading('正在保存...');
 
+      if (!activeCommandName) {
+        toast.dismiss();
+        setError('当前采集批次没有绑定指令，无法保存');
+        return;
+      }
+
       // 使用新的保存函数
       if (!currentUser) {
         toast.error('请先登录');
@@ -658,7 +701,7 @@ export default function CollectionMode() {
       
       const result = await handleSaveAfterAnomalyRemoval(
         {
-          commandName,
+          commandName: activeCommandName,
           collectionHistory,
           currentUser,
           
@@ -682,6 +725,7 @@ export default function CollectionMode() {
       
       // 重置状态
       setCommandName('');
+      setSessionCommandName(null);
       setCollectionHistory([]);
       setCollectionCount(0);
       setError(null);
@@ -722,6 +766,11 @@ export default function CollectionMode() {
       return;
     }
 
+    if (!activeCommandName) {
+      setError('当前采集批次没有绑定指令，无法保存');
+      return;
+    }
+
     setError(null);
     setIsSaving(true);
 
@@ -730,7 +779,7 @@ export default function CollectionMode() {
 
       // 使用新的采集处理函数
       const result = await handleCompleteCollectionV2({
-        commandName,
+        commandName: activeCommandName,
         collectionHistory,
         currentUser,
         
@@ -774,6 +823,7 @@ export default function CollectionMode() {
       
       // 重置状态
       setCommandName('');
+      setSessionCommandName(null);
       setCollectionHistory([]);
       setCollectionCount(0);
       setError(null);
@@ -806,6 +856,7 @@ export default function CollectionMode() {
   // 丢弃采集
   const handleDiscardCollection = () => {
     setCommandName('');
+    setSessionCommandName(null);
     setCollectionHistory([]);
     setCollectionCount(0);
     setError(null);
@@ -902,7 +953,7 @@ export default function CollectionMode() {
             value={commandName}
             onChange={(e) => setCommandName(e.target.value)}
             placeholder="输入指令名称（如：向上、向下）"
-            disabled={isCollecting}
+            disabled={isCommandInputLocked}
           />
           {commandExists && commandName && (
             <div style={{ color: '#fbbf24', fontSize: '12px', marginTop: '4px' }}>
@@ -910,6 +961,83 @@ export default function CollectionMode() {
             </div>
           )}
         </div>
+
+        {collectionHistory.length > 0 && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '16px',
+            flexWrap: 'wrap',
+            padding: '14px 16px',
+            marginBottom: '24px',
+            backgroundColor: 'rgba(212, 175, 55, 0.08)',
+            borderTop: '1px solid rgba(212, 175, 55, 0.45)',
+            borderBottom: '1px solid rgba(212, 175, 55, 0.45)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+              <LockKeyhole size={18} color="#d4af37" aria-hidden="true" />
+              <div>
+                <div style={{ color: '#f5f5f5', fontSize: '14px', fontWeight: 700 }}>
+                  当前采集指令：{activeCommandName}
+                </div>
+                <div style={{ color: '#aaa', fontSize: '12px', marginTop: '3px' }}>
+                  {collectionHistory.length} 条数据未保存；保存或丢弃后才能更换指令
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConfirm(true);
+                  setConfirmAction('complete');
+                }}
+                disabled={isSaving}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '10px 16px',
+                  backgroundColor: isSaving ? '#777' : '#4ade80',
+                  color: '#07130b',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: isSaving ? 'not-allowed' : 'pointer',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                }}
+              >
+                <Save size={16} aria-hidden="true" />
+                {isSaving ? '保存中...' : '保存当前指令'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConfirm(true);
+                  setConfirmAction('discard');
+                }}
+                disabled={isSaving}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '10px 14px',
+                  backgroundColor: 'transparent',
+                  color: '#f87171',
+                  border: '1px solid #ef4444',
+                  borderRadius: '4px',
+                  cursor: isSaving ? 'not-allowed' : 'pointer',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                }}
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                丢弃并更换指令
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* 采集计数 */}
         <div style={{ marginBottom: '24px' }}>
@@ -1168,7 +1296,7 @@ export default function CollectionMode() {
                 opacity: isSaving ? 0.6 : 1,  // 禁用时降低透明度
               }}
             >
-              {isSaving ? '保存中...' : '确认保存'}
+              {isSaving ? '保存中...' : `保存当前指令（${activeCommandName}）`}
             </button>
             <button
               onClick={() => {
@@ -1195,7 +1323,9 @@ export default function CollectionMode() {
         {showConfirm && (
           <ConfirmDialog
             title={confirmAction === 'complete' ? '保存数据' : '丢弃数据'}
-            message={confirmAction === 'complete' ? `确认保存 ${collectionCount} 次采集数据？` : '确认丢弃所有采集数据？'}
+            message={confirmAction === 'complete'
+              ? `确认将 ${collectionCount} 次采集数据保存到指令“${activeCommandName}”？`
+              : `确认丢弃指令“${activeCommandName}”的所有未保存采集数据？`}
             onConfirm={() => {
               if (confirmAction === 'complete') {
                 handleCompleteCollection();
@@ -1227,7 +1357,7 @@ export default function CollectionMode() {
         {/* 异常波形提示对话框 */}
         <AnomalyPromptDialog
           isOpen={showAnomalyDialog}
-          commandName={commandName}
+          commandName={activeCommandName}
           anomalies={anomalies}
           totalWaveforms={pendingCollections.length}
           onConfirm={(indicesToDelete) => handleAnomalyDialogConfirm(indicesToDelete)}
@@ -1248,6 +1378,12 @@ export default function CollectionMode() {
 
       setIsSaving(true);
       toast.loading('正在保存采集数据...');
+
+      if (!activeCommandName) {
+        toast.dismiss();
+        setError('当前采集批次没有绑定指令，无法保存');
+        return;
+      }
       
       // 为每个采集添加用户信息
       const collectionsWithUser = collectionsToSave.map(col => ({
@@ -1258,11 +1394,11 @@ export default function CollectionMode() {
 
       // 保存到 IndexedDB
       // ✅ 关键修复：不使用内存缓存，直接从IndexedDB查询最新数据
-      const existingCmd = await emgDatabase.getCommand(commandName);
+      const existingCmd = await emgDatabase.getCommand(activeCommandName);
       
       if (existingCmd) {
         // 追加采集到现有指令
-        logger.log(`追加采集到指令 "${commandName}"`);
+        logger.log(`追加采集到指令 "${activeCommandName}"`);
         const updatedCollections = (existingCmd.collections || []).concat(collectionsWithUser.map((col, colIdx) => ({
           index: col.index ?? colIdx,
           timestamp: col.timestamp instanceof Date ? col.timestamp.getTime() : Date.now(),
@@ -1278,8 +1414,8 @@ export default function CollectionMode() {
         })));
         
         const storedCmd = {
-          id: existingCmd.id || `cmd-${commandName}`,
-          name: commandName,
+          id: existingCmd.id || `cmd-${activeCommandName}`,
+          name: activeCommandName,
           userId: currentUser.userId,
           timestamp: existingCmd.timestamp || Date.now(),
           collections: updatedCollections,
@@ -1289,10 +1425,10 @@ export default function CollectionMode() {
         await emgDatabase.saveCommand(storedCmd);
       } else {
         // 创建新指令
-        logger.log(`创建新指令 "${commandName}"`);
+        logger.log(`创建新指令 "${activeCommandName}"`);
         const storedCmd = {
-          id: `cmd-${commandName}`,
-          name: commandName,
+          id: `cmd-${activeCommandName}`,
+          name: activeCommandName,
           userId: currentUser.userId,
           timestamp: Date.now(),
           collections: collectionsWithUser.map((col, colIdx) => ({
@@ -1317,11 +1453,12 @@ export default function CollectionMode() {
       logger.log(`保存成功: ${collectionsWithUser.length} 条采集`);
       toast.dismiss();
       toast.success(`保存成功！已保存 ${collectionsWithUser.length} 条采集数据`);
-      dataChangeEventManager.emitCommandSaved(commandName, 'CollectionMode');
+      dataChangeEventManager.emitCommandSaved(activeCommandName, 'CollectionMode');
       
       // 重置状态，清空采集历史
       setCollectionHistory([]);
       setCommandName('');
+      setSessionCommandName(null);
       setError(null);
       setCollectionCount(0);
       setShowConfirm(false);

@@ -77,4 +77,12 @@ describe('continuous code stream panel', () => {
     expect(html).toContain('data-state="discarded"');
     expect(html).toContain('data-layout="compact-single-line"');
   });
+
+  it('renders event-history dots and dashes with clearly different fixed shapes', () => {
+    const html = renderPanel('A', 'uncertain');
+    expect(html).toContain('data-event-symbol="dot"');
+    expect(html).toContain('data-event-symbol="dash"');
+    expect(html).toContain('w-2');
+    expect(html).toContain('w-7');
+  });
 });
