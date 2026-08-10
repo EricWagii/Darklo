@@ -53,6 +53,7 @@ import {
 } from '@/lib/continuous-session-evaluation';
 import type { StreamEvent } from '@/lib/continuous-stream-segmenter';
 import { evaluateBaselineCapture } from '@/lib/baseline-capture-window';
+import { createMonotonicSessionClock } from '@/lib/monotonic-session-clock';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 type SessionPhase =
@@ -132,7 +133,7 @@ export default function ContinuousCodeMode() {
   const rawBufferRef = useRef<number[]>([]);
   const envelopeBufferRef = useRef<number[]>([]);
   const frameCountRef = useRef(0);
-  const lastTimestampRef = useRef(0);
+  const sessionClockRef = useRef(createMonotonicSessionClock());
   const continuousCaptureRef = useRef(createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES));
   const [captureSampleCount, setCaptureSampleCount] = useState(0);
   const [evaluationMode, setEvaluationMode] = useState<ContinuousEvaluationMode>('scripted');
@@ -186,6 +187,7 @@ export default function ContinuousCodeMode() {
   }, []);
 
   const startBaseline = useCallback(() => {
+    sessionClockRef.current.reset();
     continuousCaptureRef.current = createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES);
     setCaptureSampleCount(0);
     baselineSamplesRef.current = [];
@@ -208,15 +210,15 @@ export default function ContinuousCodeMode() {
     setBaselineSampleRate(0);
     setBaselineFailure(null);
     setDetectorSnapshot(emptySnapshot);
-    baselineStartedAtRef.current = Date.now();
+    baselineStartedAtRef.current = sessionClockRef.current.now();
     setPhase('baseline');
-    addTimeline({ at: Date.now(), kind: 'system', message: '开始采集 3 秒静息基线' });
+    addTimeline({ at: sessionClockRef.current.now(), kind: 'system', message: '开始采集 3 秒静息基线' });
   }, [addTimeline, setPhase]);
 
   const startLongCalibration = useCallback(() => {
     detectorRef.current?.reset();
     setPhase('longCalibration');
-    addTimeline({ at: Date.now(), kind: 'system', message: '短时事件完成，请进行至少 3 次长时肌电事件' });
+    addTimeline({ at: sessionClockRef.current.now(), kind: 'system', message: '短时事件完成，请进行至少 3 次长时肌电事件' });
   }, [addTimeline, setPhase]);
 
   const finishCalibration = useCallback(() => {
@@ -226,7 +228,7 @@ export default function ContinuousCodeMode() {
       longDurationsMs: longDurationsRef.current,
     });
     if (!result.ok) {
-      addTimeline({ at: Date.now(), kind: 'blocked', message: result.reason });
+      addTimeline({ at: sessionClockRef.current.now(), kind: 'blocked', message: result.reason });
       return;
     }
     calibrationRef.current = result.calibration;
@@ -234,7 +236,7 @@ export default function ContinuousCodeMode() {
     detectorRef.current = new ContinuousEmgDetector(result.calibration.detectorConfig);
     setDecoder(resetDecoder());
     setPhase('ready');
-    addTimeline({ at: Date.now(), kind: 'system', message: '校准完成，可以开始连续输入' });
+    addTimeline({ at: sessionClockRef.current.now(), kind: 'system', message: '校准完成，可以开始连续输入' });
   }, [addTimeline, setPhase]);
 
   const startDecoding = useCallback(() => {
@@ -249,7 +251,7 @@ export default function ContinuousCodeMode() {
     }
     detectorRef.current = new ContinuousEmgDetector(calibrationRef.current.detectorConfig);
     setPhase('decoding');
-    addTimeline({ at: Date.now(), kind: 'system', message: '开始连续解码' });
+    addTimeline({ at: sessionClockRef.current.now(), kind: 'system', message: '开始连续解码' });
   }, [addTimeline, evaluationMode, setPhase, targetText]);
 
   useEffect(() => {
@@ -262,7 +264,7 @@ export default function ContinuousCodeMode() {
     if (phase !== 'decoding' || !decoderConfig) return;
     const timer = window.setInterval(() => {
       if (detectorRef.current?.getSnapshot().isActive) return;
-      const timestamp = Date.now();
+      const timestamp = sessionClockRef.current.now();
       setDecoder((current) => tickDecoder(current, timestamp, decoderConfig));
     }, 100);
     return () => window.clearInterval(timer);
@@ -275,7 +277,7 @@ export default function ContinuousCodeMode() {
       if (phaseRef.current !== 'baseline') return;
       const snapshot = evaluateBaselineCapture({
         startedAt: baselineStartedAtRef.current,
-        now: Date.now(),
+        now: sessionClockRef.current.now(),
         durationMs: BASELINE_DURATION_MS,
         sampleCount: baselineSamplesRef.current.length,
         minimumSamples: BASELINE_MINIMUM_SAMPLES,
@@ -291,7 +293,7 @@ export default function ContinuousCodeMode() {
         createCalibrationDetector(baseline);
         setPhase('shortCalibration');
         addTimeline({
-          at: Date.now(),
+          at: sessionClockRef.current.now(),
           kind: 'system',
           message: `静息基线完成：${snapshot.sampleCount} 个样本，约 ${Math.round(snapshot.measuredSampleRate)} Hz。请进行至少 3 次短时肌电事件`,
         });
@@ -303,7 +305,7 @@ export default function ContinuousCodeMode() {
         : `静息采集仅收到 ${snapshot.sampleCount} 个样本（约 ${Math.round(snapshot.measuredSampleRate)} Hz），至少需要 ${BASELINE_MINIMUM_SAMPLES} 个。`;
       setBaselineFailure(message);
       setPhase('idle');
-      addTimeline({ at: Date.now(), kind: 'blocked', message });
+      addTimeline({ at: sessionClockRef.current.now(), kind: 'blocked', message });
     };
 
     updateBaselineWindow();
@@ -320,14 +322,12 @@ export default function ContinuousCodeMode() {
       setCalibration(null);
       setDecoder(resetDecoder());
       setPhase('idle');
-      addTimeline({ at: Date.now(), kind: 'blocked', message: '硬件已断开，请重新连接并校准' });
+      addTimeline({ at: sessionClockRef.current.now(), kind: 'blocked', message: '硬件已断开，请重新连接并校准' });
     }
   }, [addTimeline, serial.isConnected, setPhase]);
 
   useEffect(() => serial.onDataReceived((data) => {
-    const sampleInterval = 1_000 / HARDWARE_CONFIG.SAMPLE_RATE;
-    const timestamp = Math.max(data.timestamp, lastTimestampRef.current + sampleInterval);
-    lastTimestampRef.current = timestamp;
+    const timestamp = sessionClockRef.current.now();
     const sample = data.channel2;
     const currentPhase = phaseRef.current;
 
@@ -405,12 +405,12 @@ export default function ContinuousCodeMode() {
       const port = await serial.requestPort();
       await serial.connect(port, HARDWARE_CONFIG.BAUD_RATE);
     } catch (error) {
-      addTimeline({ at: Date.now(), kind: 'blocked', message: `连接失败：${error instanceof Error ? error.message : '未知错误'}` });
+      addTimeline({ at: sessionClockRef.current.now(), kind: 'blocked', message: `连接失败：${error instanceof Error ? error.message : '未知错误'}` });
     }
   };
 
   const finishSession = () => {
-    const now = Date.now();
+    const now = sessionClockRef.current.now();
     const finalizedDecoder = decoderConfig
       ? forceSplitDecoder(decoder, now, decoderConfig)
       : decoder;
