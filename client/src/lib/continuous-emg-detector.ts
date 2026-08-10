@@ -1,3 +1,5 @@
+import type { PauseTimingModel } from './continuous-pause-calibration';
+
 export interface ContinuousBaselineStats {
   center: number;
   noise: number;
@@ -50,6 +52,7 @@ export interface ContinuousCalibration {
   longMedianMs: number;
   durationBoundaryMs: number;
   uncertaintyMarginMs: number;
+  pauseTimingModel?: PauseTimingModel;
   detectorConfig: ContinuousDetectorConfig;
 }
 
