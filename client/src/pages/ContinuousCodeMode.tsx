@@ -85,7 +85,14 @@ const BASELINE_MINIMUM_SAMPLES = 250;
 const CALIBRATION_TARGET = 3;
 const RHYTHM_CALIBRATION_TARGET = 3;
 const DISPLAY_SAMPLE_COUNT = 750;
-const CONTINUOUS_CAPTURE_MAX_SAMPLES = HARDWARE_CONFIG.SAMPLE_RATE * 60 * 30;
+const CONTINUOUS_CAPTURE_MAX_SAMPLES = HARDWARE_CONFIG.SAMPLE_RATE * 60 * 5;
+const CAPTURED_SIGNAL_PHASES = new Set<SessionPhase>([
+  'baseline',
+  'shortCalibration',
+  'longCalibration',
+  'rhythmCalibration',
+  'decoding',
+]);
 
 const emptySnapshot: DetectorSnapshot = {
   envelope: 0,
@@ -473,7 +480,7 @@ export default function ContinuousCodeMode() {
       }
     }
 
-    if (currentPhase !== 'idle') {
+    if (CAPTURED_SIGNAL_PHASES.has(currentPhase)) {
       continuousCaptureRef.current = appendContinuousSample(continuousCaptureRef.current, {
         timestamp,
         ch1: data.channel1,

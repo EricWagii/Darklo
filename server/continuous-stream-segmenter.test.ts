@@ -9,6 +9,7 @@ import {
   type StreamConfig,
 } from '../client/src/lib/continuous-stream-segmenter';
 import { buildPauseTimingModel } from '../client/src/lib/continuous-pause-calibration';
+import { PACE_PRESETS } from '../client/src/lib/continuous-code-decoder';
 
 const config: StreamConfig = {
   characterBoundaryMs: 700,
@@ -174,5 +175,38 @@ describe('continuous Morse stream segmenter', () => {
     };
 
     expect(getTentativeText(state)).toBe('SO');
+  });
+
+  it('does not split field-recorded EOR at natural 1200-1300 ms within-character rests', () => {
+    const fieldConfig: StreamConfig = {
+      ...config,
+      ...PACE_PRESETS.slow,
+      boundaryUncertaintyMs: 160,
+    };
+    const pulses = [
+      { symbol: '.', startedAt: 10_987, endedAt: 11_485 },
+      { symbol: '-', startedAt: 18_819, endedAt: 19_901 },
+      { symbol: '-', startedAt: 21_169, endedAt: 22_281 },
+      { symbol: '-', startedAt: 23_489, endedAt: 24_657 },
+      { symbol: '.', startedAt: 30_177, endedAt: 30_451 },
+      { symbol: '-', startedAt: 31_327, endedAt: 32_361 },
+      { symbol: '.', startedAt: 33_549, endedAt: 34_025 },
+    ] as const;
+
+    let state = createStreamState();
+    for (let index = 0; index < pulses.length; index += 1) {
+      const pulse = pulses[index];
+      state = appendStreamSymbol(state, pulse, fieldConfig);
+      const nextStart = pulses[index + 1]?.startedAt;
+      if (nextStart !== undefined) {
+        for (let now = pulse.endedAt + 100; now < nextStart; now += 100) {
+          state = advanceStream(state, now, fieldConfig);
+        }
+      }
+    }
+    state = forceSplit(state, 40_000, fieldConfig);
+
+    expect(state.committedText).toBe('EOR');
+    expect(state.pendingSymbols).toBe('');
   });
 });

@@ -122,4 +122,20 @@ describe('continuous EMG calibration', () => {
       expect(result.reason).toContain('区分');
     }
   });
+
+  it('keeps field-recorded short and long bites on opposite sides of the boundary', () => {
+    const result = buildContinuousCalibration({
+      baselineSamples: quiet(750),
+      shortDurationsMs: [366, 498, 294],
+      longDurationsMs: [900, 1_176, 1_174],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The field session contained valid short events up to 554 ms and valid
+      // long events down to 720 ms. A midpoint at 770 ms loses those long bites.
+      expect(result.calibration.durationBoundaryMs).toBeGreaterThan(554);
+      expect(result.calibration.durationBoundaryMs).toBeLessThan(720);
+    }
+  });
 });

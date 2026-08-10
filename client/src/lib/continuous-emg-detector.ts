@@ -110,8 +110,11 @@ export const buildContinuousCalibration = ({
   }
 
   const baseline = estimateContinuousBaseline(baselineSamples);
-  const durationBoundaryMs = (shortMedianMs + longMedianMs) / 2;
-  const uncertaintyMarginMs = Math.max(35, Math.min(120, durationGap * 0.14));
+  // A geometric boundary is less biased toward the long-duration class when the
+  // user's long bites vary widely. Keep the uncertainty band narrow enough that
+  // valid field-recorded long bites do not fall into the ambiguous region.
+  const durationBoundaryMs = Math.sqrt(shortMedianMs * longMedianMs);
+  const uncertaintyMarginMs = Math.max(30, Math.min(70, durationGap * 0.07));
 
   return {
     ok: true,

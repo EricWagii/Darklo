@@ -7,7 +7,7 @@
  * - 支持连续多指令识别
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation } from 'wouter';
 import {
   Container,
@@ -145,6 +145,17 @@ const createRecognitionHistoryId = (): string => {
 };
 
 const MIN_RECOGNITION_SAMPLES = 50;
+const LIVE_RECOGNITION_DISPLAY_SAMPLES = 3000;
+const LIVE_RECOGNITION_REFRESH_SAMPLES = 10;
+const MAX_RECOGNITION_DIAGNOSTIC_TRIALS = 20;
+
+const yieldToBrowser = (): Promise<void> => new Promise((resolve) => {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => resolve());
+  } else {
+    setTimeout(resolve, 0);
+  }
+});
 
 const isValidSerialSample = (data: any): boolean => {
   return Number.isFinite(data?.channel1) &&
@@ -244,11 +255,20 @@ const distanceSimilarity = (a: number[], b: number[]): number => {
   return 100 / (1 + distance / Math.sqrt(a.length));
 };
 
+const zscoreNormalize = (values: number[]): number[] => {
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const std = Math.sqrt(
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length
+  ) || 1;
+  return values.map((value) => (value - mean) / std);
+};
+
 export default function RecognitionMode() {
   const [location, navigate] = useLocation();
   const { isConnected, onDataReceived } = useSerialConnectionContext();
 
   const [isRecognizing, setIsRecognizing] = useState(false);
+  const [isProcessingRecognition, setIsProcessingRecognition] = useState(false);
   const [recognitionTime, setRecognitionTime] = useState(0);
   const [currentWaveform, setCurrentWaveform] = useState<{ ch1: number[]; ch2: number[]; ch3: number[] }>({
     ch1: [],
@@ -263,6 +283,71 @@ export default function RecognitionMode() {
   const [error, setError] = useState<string | null>(null);
   const [savedCommands, setSavedCommands] = useState<StoredCommand[]>([]);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.7);
+
+  const compatibleCommands = useMemo(() => savedCommands
+    .map((cmd) => {
+      const baselineCompatible = cmd.collections.filter((collection) =>
+        isCollectionPreprocessedWithRestingBaseline(collection)
+      );
+      const usabilityScores = evaluateAllCollectionsImproved(
+        baselineCompatible.map((collection) => ({
+          ...collection.waveform,
+          startupArtifactMeta: collection.pipelineMetadata?.startupArtifact,
+        }))
+      );
+
+      return {
+        ...cmd,
+        collections: baselineCompatible.filter((collection, index) => (
+          usabilityScores[index]?.detectedBurstCount > 0 &&
+          usabilityScores[index]?.activityClarity >= 20 &&
+          usabilityScores[index]?.artifactResistance >= 30 &&
+          collection.pipelineMetadata?.startupArtifact?.ambiguous !== true
+        )),
+      };
+    })
+    .filter((cmd) => cmd.collections.length > 0), [savedCommands]);
+
+  const temporalBurstModel = useMemo(() => buildTemporalBurstModel(
+    compatibleCommands.map((cmd) => ({
+      name: cmd.name,
+      signals: cmd.collections.map((collection) => collection.waveform.ch2),
+    }))
+  ), [compatibleCommands]);
+
+  const amplitudeNormalizer = useMemo(() => buildFeatureNormalizer(
+    compatibleCommands.flatMap((cmd) =>
+      cmd.collections.map((collection) => extractAmplitudeFeatureVector(collection.waveform))
+    )
+  ), [compatibleCommands]);
+
+  const referenceFeatureCache = useMemo(() => {
+    const cache = new Map<StoredCommand['collections'][number], {
+      ch1: number[];
+      ch2: number[];
+      ch3: number[];
+      amplitude: number[];
+    }>();
+    compatibleCommands.forEach((cmd) => {
+      cmd.collections.forEach((collection) => {
+        const features = extractFullFeatures(
+          collection.waveform.ch1,
+          collection.waveform.ch2,
+          collection.waveform.ch3
+        );
+        cache.set(collection, {
+          ch1: zscoreNormalize([...features.timeDomain.ch1, ...features.frequencyDomain.ch1]),
+          ch2: zscoreNormalize([...features.timeDomain.ch2, ...features.frequencyDomain.ch2]),
+          ch3: zscoreNormalize([...features.timeDomain.ch3, ...features.frequencyDomain.ch3]),
+          amplitude: normalizeFeatureVector(
+            extractAmplitudeFeatureVector(collection.waveform),
+            amplitudeNormalizer
+          ),
+        });
+      });
+    });
+    return cache;
+  }, [amplitudeNormalizer, compatibleCommands]);
 
   // ✅ 修复5：实现计算信噪比（SNR）的函数
   // ✅ 修复3：计算通道诊断信息：基于原始波形质量指标
@@ -333,9 +418,9 @@ export default function RecognitionMode() {
   const [currentUser, setCurrentUser] = useState<any>(null);
 
   useEffect(() => {
-    setEmgRuntimeBusy('recognition-mode', isRecognizing || showFeedback || showElectrodeCheck);
+    setEmgRuntimeBusy('recognition-mode', isRecognizing || isProcessingRecognition || showFeedback || showElectrodeCheck);
     return () => setEmgRuntimeBusy('recognition-mode', false);
-  }, [isRecognizing, showFeedback, showElectrodeCheck]);
+  }, [isRecognizing, isProcessingRecognition, showFeedback, showElectrodeCheck]);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const waveformBufferRef = useRef<{ ch1: number[]; ch2: number[]; ch3: number[] }>({
@@ -345,6 +430,8 @@ export default function RecognitionMode() {
   });
   const waveformTimestampBufferRef = useRef<number[]>([]);
   const lastRecognitionSampleAtRef = useRef<number | null>(null);
+  const recognitionDisplayFrameRef = useRef(0);
+  const recognitionProcessingRef = useRef(false);
   const recognitionTrialsRef = useRef<RecognitionDiagnosticTrial[]>([]);
   const activeDiagnosticTrialIdRef = useRef<string | null>(null);
   const [recognitionDiagnosticCount, setRecognitionDiagnosticCount] = useState(0);
@@ -353,7 +440,14 @@ export default function RecognitionMode() {
     const trialId = activeDiagnosticTrialIdRef.current;
     if (!trialId) return;
     const trial = recognitionTrialsRef.current.find((item) => item.trialId === trialId);
-    if (trial) Object.assign(trial, patch);
+    if (trial) {
+      const compactPatch = { ...patch };
+      if (patch.result) {
+        const { processedWaveform: _processedWaveform, ...compactResult } = patch.result as any;
+        compactPatch.result = compactResult;
+      }
+      Object.assign(trial, compactPatch);
+    }
   };
 
   const loadRecognitionData = async () => {
@@ -448,12 +542,14 @@ export default function RecognitionMode() {
         waveformTimestampBufferRef.current.push(timestamp);
         lastRecognitionSampleAtRef.current = timestamp;
 
-        // 实时显示（最多显示 3000 个点，约6秒采集时长）
-        setCurrentWaveform((prev) => ({
-          ch1: [...prev.ch1, data.channel1].slice(-3000),
-          ch2: [...prev.ch2, data.channel2].slice(-3000),
-          ch3: [...prev.ch3, data.channel3].slice(-3000),
-        }));
+        recognitionDisplayFrameRef.current += 1;
+        if (recognitionDisplayFrameRef.current % LIVE_RECOGNITION_REFRESH_SAMPLES === 0) {
+          setCurrentWaveform({
+            ch1: waveformBufferRef.current.ch1.slice(-LIVE_RECOGNITION_DISPLAY_SAMPLES),
+            ch2: waveformBufferRef.current.ch2.slice(-LIVE_RECOGNITION_DISPLAY_SAMPLES),
+            ch3: waveformBufferRef.current.ch3.slice(-LIVE_RECOGNITION_DISPLAY_SAMPLES),
+          });
+        }
       }
     };
 
@@ -523,8 +619,9 @@ export default function RecognitionMode() {
   };
 
   const addRecognitionHistoryRecord = (record: RecognitionResult) => {
+    const { processedWaveform: _processedWaveform, ...compactRecord } = record;
     const recordWithId: RecognitionResult = {
-      ...record,
+      ...compactRecord,
       historyId: record.historyId || createRecognitionHistoryId(),
     };
     setRecognitionHistory(prevHistory => [recordWithId, ...prevHistory].slice(0, 50));
@@ -553,6 +650,7 @@ export default function RecognitionMode() {
   };
 
   const handleStartRecognition = () => {
+    if (recognitionProcessingRef.current || isProcessingRecognition) return;
     if (!isConnected) {
       setError('请先连接 STM32 设备');
       return;
@@ -590,6 +688,7 @@ export default function RecognitionMode() {
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
     waveformBufferRef.current = { ch1: [], ch2: [], ch3: [] };
     waveformTimestampBufferRef.current = [];
+    recognitionDisplayFrameRef.current = 0;
     const trialId = createRecognitionHistoryId();
     activeDiagnosticTrialIdRef.current = trialId;
     const diagnosticTrial: RecognitionDiagnosticTrial = {
@@ -604,7 +703,7 @@ export default function RecognitionMode() {
     recognitionTrialsRef.current = [
       ...recognitionTrialsRef.current,
       diagnosticTrial,
-    ].slice(-50);
+    ].slice(-MAX_RECOGNITION_DIAGNOSTIC_TRIALS);
     lastRecognitionSampleAtRef.current = null;
     setRecognitionTime(0);
     setShowElectrodeCheck(false);
@@ -618,11 +717,23 @@ export default function RecognitionMode() {
 
   // 停止识别
   const handleStopRecognition = async () => {
+    if (recognitionProcessingRef.current) return;
+    recognitionProcessingRef.current = true;
+    setIsProcessingRecognition(true);
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
     }
 
     setIsRecognizing(false);
+    setCurrentWaveform({
+      ch1: waveformBufferRef.current.ch1.slice(-LIVE_RECOGNITION_DISPLAY_SAMPLES),
+      ch2: waveformBufferRef.current.ch2.slice(-LIVE_RECOGNITION_DISPLAY_SAMPLES),
+      ch3: waveformBufferRef.current.ch3.slice(-LIVE_RECOGNITION_DISPLAY_SAMPLES),
+    });
+    await yieldToBrowser();
+
+    try {
     updateActiveDiagnosticTrial({ endedAt: Date.now(), status: 'completed' });
     setRecognitionDiagnosticCount(recognitionTrialsRef.current.length);
 
@@ -670,30 +781,6 @@ export default function RecognitionMode() {
         });
         return;
       }
-      const compatibleCommands = savedCommands
-        .map((cmd) => {
-          const baselineCompatible = cmd.collections.filter((collection) =>
-            isCollectionPreprocessedWithRestingBaseline(collection)
-          );
-          const usabilityScores = evaluateAllCollectionsImproved(
-            baselineCompatible.map((collection) => ({
-              ...collection.waveform,
-              startupArtifactMeta: collection.pipelineMetadata?.startupArtifact,
-            }))
-          );
-
-          return {
-            ...cmd,
-            collections: baselineCompatible.filter((collection, index) => (
-              usabilityScores[index]?.detectedBurstCount > 0 &&
-              usabilityScores[index]?.activityClarity >= 20 &&
-              usabilityScores[index]?.artifactResistance >= 30 &&
-              collection.pipelineMetadata?.startupArtifact?.ambiguous !== true
-            )),
-          };
-        })
-        .filter((cmd) => cmd.collections.length > 0);
-
       if (compatibleCommands.length === 0) {
         const errorMsg = '没有可用的静息基线预处理训练样本。请重新采集训练数据后再测试';
         setError(errorMsg);
@@ -759,12 +846,6 @@ export default function RecognitionMode() {
         ch3: processedWaveform.ch3,
       };
 
-      const temporalBurstModel = buildTemporalBurstModel(
-        compatibleCommands.map((cmd) => ({
-          name: cmd.name,
-          signals: cmd.collections.map((collection) => collection.waveform.ch2),
-        }))
-      );
       const temporalBurstResult = recognizeTemporalBurst(
         normalizedWaveform.ch2,
         temporalBurstModel
@@ -854,21 +935,9 @@ export default function RecognitionMode() {
           processedWaveform.ch3
         );
         
-        // Z-score 标准化
-        const zscoreNorm = (arr: number[]): number[] => {
-          const m = arr.reduce((a, b) => a + b, 0) / arr.length;
-          const s = Math.sqrt(arr.map(x => (x - m) ** 2).reduce((a, b) => a + b, 0) / arr.length) || 1;
-          return arr.map(x => (x - m) / s);
-        };
-        
-        const testCh1 = zscoreNorm([...testFeatures.timeDomain.ch1, ...testFeatures.frequencyDomain.ch1]);
-        const testCh2 = zscoreNorm([...testFeatures.timeDomain.ch2, ...testFeatures.frequencyDomain.ch2]);
-        const testCh3 = zscoreNorm([...testFeatures.timeDomain.ch3, ...testFeatures.frequencyDomain.ch3]);
-
-        const amplitudeReferenceVectors = compatibleCommands.flatMap((cmd) =>
-          cmd.collections.map((collection) => extractAmplitudeFeatureVector(collection.waveform))
-        );
-        const amplitudeNormalizer = buildFeatureNormalizer(amplitudeReferenceVectors);
+        const testCh1 = zscoreNormalize([...testFeatures.timeDomain.ch1, ...testFeatures.frequencyDomain.ch1]);
+        const testCh2 = zscoreNormalize([...testFeatures.timeDomain.ch2, ...testFeatures.frequencyDomain.ch2]);
+        const testCh3 = zscoreNormalize([...testFeatures.timeDomain.ch3, ...testFeatures.frequencyDomain.ch3]);
         const testAmplitudeFeatures = normalizeFeatureVector(
           extractAmplitudeFeatureVector(normalizedWaveform),
           amplitudeNormalizer
@@ -883,6 +952,13 @@ export default function RecognitionMode() {
         let lastChannelWeights = { ch1: 0.30, ch2: 0.60, ch3: 0.10 };
         let lastChannelSNR = { ch1: 0, ch2: 0, ch3: 0 };
         let lastChannelDiagnostics = { ch1: {}, ch2: {}, ch3: {} };
+        const ch1Diag = calculateChannelDiagnostics(processedWaveform.ch1);
+        const ch2Diag = calculateChannelDiagnostics(processedWaveform.ch2);
+        const ch3Diag = calculateChannelDiagnostics(processedWaveform.ch3);
+        const weights = calculateChannelWeights(ch1Diag, ch2Diag, ch3Diag);
+        lastChannelWeights = weights;
+        lastChannelSNR = { ch1: ch1Diag.rms, ch2: ch2Diag.rms, ch3: ch3Diag.rms };
+        lastChannelDiagnostics = { ch1: ch1Diag, ch2: ch2Diag, ch3: ch3Diag };
         
         for (const cmd of compatibleCommands) {
           // ✅ 修复5：收集所有样本的相似度分数，用于计算top-k均值
@@ -894,67 +970,20 @@ export default function RecognitionMode() {
           for (const collection of cmd.collections) {
             // 重要：不要重复处理已经处理过的波形
             // 采集时已经上过滤波、裁剪、缩放，直接使用已处理的波形
-            const refProcessedWaveform: ProcessedWaveform = {
-              ch1: collection.waveform.ch1,
-              ch2: collection.waveform.ch2,
-              ch3: collection.waveform.ch3,
-              meta: {
-                croppingMeta: collection.croppingMeta || {
-                  startIdx: 0,
-                  endIdx: collection.waveform.ch1.length,
-                  confidence: 1.0,
-                  method: 'unified-pipeline',
-                  stage: 'success',
-                  reason: '采集时已处理',
-                },
-                normalizationMeta: collection.normalizationMeta || {
-                  originalLength: collection.waveform.ch1.length,
-                  targetLength: 512,
-                  timestamp: Date.now(),
-                },
-              },
-            };
-            
-            // 提取参考波形的特征（每个通道分开）
-            const refFeatures = extractFullFeatures(
-              refProcessedWaveform.ch1,
-              refProcessedWaveform.ch2,
-              refProcessedWaveform.ch3
-            );
-            
-            // Z-score 标准化
-            const refCh1 = zscoreNorm([...refFeatures.timeDomain.ch1, ...refFeatures.frequencyDomain.ch1]);
-            const refCh2 = zscoreNorm([...refFeatures.timeDomain.ch2, ...refFeatures.frequencyDomain.ch2]);
-            const refCh3 = zscoreNorm([...refFeatures.timeDomain.ch3, ...refFeatures.frequencyDomain.ch3]);
+            const cachedReference = referenceFeatureCache.get(collection);
+            if (!cachedReference) continue;
             
             // ✅ 修复：通道独立比对，然后根据权重投票
             // ch2 是真正的判别通道，给予60%权重
             // ch1 是干扰通道（工频），给予30%权重
             // ch3 是辅助通道，给予10%权重
-            const simCh1 = calculateFeatureSimilarity(testCh1, refCh1);
-            const simCh2 = calculateFeatureSimilarity(testCh2, refCh2);
-            const simCh3 = calculateFeatureSimilarity(testCh3, refCh3);
-            
-            // ✅ 修复2：计算通道质量诊断：基于原始波形而非特征向量
-            const ch1Diag = calculateChannelDiagnostics(processedWaveform.ch1);
-            const ch2Diag = calculateChannelDiagnostics(processedWaveform.ch2);
-            const ch3Diag = calculateChannelDiagnostics(processedWaveform.ch3);
-            
-            // ✅ 修复3：根据质量指标计算权重
-            const weights = calculateChannelWeights(ch1Diag, ch2Diag, ch3Diag);
-            
-            // ✅ 修复3：保存最后一个样本的权重和诊断信息
-            lastChannelWeights = weights;
-            lastChannelSNR = { ch1: ch1Diag.rms, ch2: ch2Diag.rms, ch3: ch3Diag.rms };
-            lastChannelDiagnostics = { ch1: ch1Diag, ch2: ch2Diag, ch3: ch3Diag };
+            const simCh1 = calculateFeatureSimilarity(testCh1, cachedReference.ch1);
+            const simCh2 = calculateFeatureSimilarity(testCh2, cachedReference.ch2);
+            const simCh3 = calculateFeatureSimilarity(testCh3, cachedReference.ch3);
             
             // ✅ 修复3：使用动态权重计算结合相似度
             const shapeSim = weights.ch1 * simCh1 + weights.ch2 * simCh2 + weights.ch3 * simCh3;
-            const refAmplitudeFeatures = normalizeFeatureVector(
-              extractAmplitudeFeatureVector(collection.waveform),
-              amplitudeNormalizer
-            );
-            const amplitudeSim = distanceSimilarity(testAmplitudeFeatures, refAmplitudeFeatures);
+            const amplitudeSim = distanceSimilarity(testAmplitudeFeatures, cachedReference.amplitude);
             const combinedSim = amplitudeSim * 0.7 + shapeSim * 0.3;
             sampleScores.push(combinedSim);
             amplitudeScores.push(amplitudeSim);
@@ -1083,6 +1112,10 @@ export default function RecognitionMode() {
       // ✅ 修复：不添加预测结果到历史记录
       // 历史记录只在用户反馈后添加，避免双记录
       // setRecognitionHistory([...recognitionHistory, result]);
+    }
+    } finally {
+      recognitionProcessingRef.current = false;
+      setIsProcessingRecognition(false);
     }
   };
 
@@ -1392,19 +1425,19 @@ export default function RecognitionMode() {
             {!isRecognizing ? (
               <button
                 onClick={handleStartRecognition}
-                disabled={!isConnected || savedCommands.length === 0}
+                disabled={!isConnected || savedCommands.length === 0 || isProcessingRecognition}
                 style={{
                   padding: '12px 24px',
-                  backgroundColor: isConnected && savedCommands.length > 0 ? '#d4af37' : '#666',
+                  backgroundColor: isConnected && savedCommands.length > 0 && !isProcessingRecognition ? '#d4af37' : '#666',
                   color: '#000',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: isConnected && savedCommands.length > 0 ? 'pointer' : 'not-allowed',
+                  cursor: isConnected && savedCommands.length > 0 && !isProcessingRecognition ? 'pointer' : 'not-allowed',
                   fontWeight: 'bold',
                   fontSize: '14px',
                 }}
               >
-                开始识别
+                {isProcessingRecognition ? '处理中...' : '开始识别'}
               </button>
             ) : (
               <button

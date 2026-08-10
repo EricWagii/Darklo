@@ -61,6 +61,14 @@ export interface ContinuousSampleInput {
 
 const nowIso = () => new Date().toISOString();
 
+const compactRecognitionResult = (
+  result: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined => {
+  if (!result) return result;
+  const { processedWaveform: _duplicatedWaveform, ...summary } = result;
+  return summary;
+};
+
 export const createContinuousSessionId = (): string => {
   const randomId = globalThis.crypto?.randomUUID?.()
     ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
@@ -113,7 +121,13 @@ export const buildRecognitionDiagnosticPackage = (input: {
   commands: any[];
   sampleRate: number;
   context?: Record<string, unknown>;
-}) => ({
+}) => {
+  const trials = input.trials.map((trial) => ({
+    ...trial,
+    result: compactRecognitionResult(trial.result),
+  }));
+
+  return {
   exportFormat: 'darklo-emg-complete-diagnostic',
   version: '2.0',
   sourcePage: 'silent-recognition' as const,
@@ -121,14 +135,15 @@ export const buildRecognitionDiagnosticPackage = (input: {
   sampleRate: input.sampleRate,
   context: input.context ?? {},
   summary: {
-    trialCount: input.trials.length,
-    completedTrialCount: input.trials.filter((trial) => trial.status === 'completed').length,
-    failedTrialCount: input.trials.filter((trial) => trial.status === 'failed').length,
-    feedbackCount: input.trials.filter((trial) => Boolean(trial.feedback)).length,
+    trialCount: trials.length,
+    completedTrialCount: trials.filter((trial) => trial.status === 'completed').length,
+    failedTrialCount: trials.filter((trial) => trial.status === 'failed').length,
+    feedbackCount: trials.filter((trial) => Boolean(trial.feedback)).length,
   },
-  trials: input.trials,
+  trials,
   trainingCommands: input.commands,
-});
+  };
+};
 
 export const buildContinuousDiagnosticPackage = (input: {
   sessionId?: string;

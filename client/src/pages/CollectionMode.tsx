@@ -84,6 +84,17 @@ import {
   getInstructionSpec,
 } from '@shared/instruction-length-spec';
 
+const LIVE_WAVEFORM_LIMIT = 3000;
+const LIVE_WAVEFORM_REFRESH_SAMPLES = 10;
+
+const yieldToBrowser = (): Promise<void> => new Promise((resolve) => {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => resolve());
+  } else {
+    setTimeout(resolve, 0);
+  }
+});
+
 // 操作日志导出函数
 const handleExportLog = () => {
   try {
@@ -216,6 +227,7 @@ export default function CollectionMode() {
   // 这样确保任何时刻都是最新数据，不会出现删除后数据重现的问题
   const [isAppendingMode, setIsAppendingMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);  // 防止重复点击
+  const [isProcessingCapture, setIsProcessingCapture] = useState(false);
   const [commandExists, setCommandExists] = useState(false);
   const activeCommandName = resolveCollectionSessionCommand(commandName, sessionCommandName);
   const isCommandInputLocked = isCollectionCommandInputLocked({
@@ -223,7 +235,7 @@ export default function CollectionMode() {
     unsavedCount: collectionHistory.length,
     isCollecting,
     countdownTime,
-    isSaving,
+    isSaving: isSaving || isProcessingCapture,
   });
 
   // ✅ 修复：监听commandName变化，检查指令是否存在
@@ -253,12 +265,19 @@ export default function CollectionMode() {
   const [pendingCollections, setPendingCollections] = useState<CollectionData[]>([]);
 
   useEffect(() => {
-    const busy = isCollecting || countdownTime > 0 || showConfirm || showAnomalyDialog || isSaving;
+    const busy = isCollecting || countdownTime > 0 || showConfirm || showAnomalyDialog || isSaving || isProcessingCapture;
     setEmgRuntimeBusy('collection-mode', busy);
     return () => setEmgRuntimeBusy('collection-mode', false);
-  }, [isCollecting, countdownTime, showConfirm, showAnomalyDialog, isSaving]);
+  }, [isCollecting, countdownTime, showConfirm, showAnomalyDialog, isSaving, isProcessingCapture]);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const collectionStartedAtRef = useRef<number | null>(null);
+  const collectionBufferRef = useRef<{ ch1: number[]; ch2: number[]; ch3: number[] }>({
+    ch1: [],
+    ch2: [],
+    ch3: [],
+  });
+  const collectionDisplayFrameRef = useRef(0);
 
   // 检查用户登录状态
   useEffect(() => {
@@ -363,7 +382,6 @@ export default function CollectionMode() {
     if (newHistory.length === 0) {
       setSessionCommandName(null);
     }
-    setQualityScores(buildQualityScoresForHistory(newHistory));
     const collectionIndex = deletedCollection ? deletedDisplayIndex : '?';
     toast.success(`已削除采集 #${collectionIndex}`);
   };
@@ -440,11 +458,18 @@ export default function CollectionMode() {
   useEffect(() => {
     const handleDataReceived = (data: any) => {
       if (isCollecting) {
-        setCurrentWaveform((prev) => ({
-          ch1: [...prev.ch1, data.channel1],
-          ch2: [...prev.ch2, data.channel2],
-          ch3: [...prev.ch3, data.channel3],
-        }));
+        collectionBufferRef.current.ch1.push(data.channel1);
+        collectionBufferRef.current.ch2.push(data.channel2);
+        collectionBufferRef.current.ch3.push(data.channel3);
+        collectionDisplayFrameRef.current += 1;
+
+        if (collectionDisplayFrameRef.current % LIVE_WAVEFORM_REFRESH_SAMPLES === 0) {
+          setCurrentWaveform({
+            ch1: collectionBufferRef.current.ch1.slice(-LIVE_WAVEFORM_LIMIT),
+            ch2: collectionBufferRef.current.ch2.slice(-LIVE_WAVEFORM_LIMIT),
+            ch3: collectionBufferRef.current.ch3.slice(-LIVE_WAVEFORM_LIMIT),
+          });
+        }
       }
     };
 
@@ -495,6 +520,7 @@ export default function CollectionMode() {
 
   // 开始采集
   const handleStartCollection = () => {
+    if (isProcessingCapture || countdownTime > 0) return;
     const requestedCommandName = commandName.trim();
     const batchCommandName = resolveCollectionSessionCommand(requestedCommandName, sessionCommandName);
 
@@ -530,6 +556,8 @@ export default function CollectionMode() {
     setIsCollecting(false);
     setError(null);
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
+    collectionBufferRef.current = { ch1: [], ch2: [], ch3: [] };
+    collectionDisplayFrameRef.current = 0;
     setCollectionTime(0);
     setShowElectrodeCheck(false);
     setElectrodeCheckResult(null);
@@ -542,24 +570,47 @@ export default function CollectionMode() {
       if (countdown <= 0) {
         clearInterval(countdownInterval);
         // ✅ 修复：倒计时结束后开始实际采集
+        collectionStartedAtRef.current = Date.now();
         setIsCollecting(true);
         timerRef.current = setInterval(() => {
-          setCollectionTime((t) => t + 10);
-        }, 10);
+          const startedAt = collectionStartedAtRef.current;
+          if (startedAt !== null) setCollectionTime(Date.now() - startedAt);
+        }, 100);
       }
     }, 1000);
   };
 
   // 停止采集
-  const handleStopCollection = () => {
+  const handleStopCollection = async () => {
+    if (!isCollecting || isProcessingCapture) return;
+
     setIsCollecting(false);
+    setIsProcessingCapture(true);
 
     if (timerRef.current) {
       clearInterval(timerRef.current);
     }
 
+    const capturedWaveform = {
+      ch1: [...collectionBufferRef.current.ch1],
+      ch2: [...collectionBufferRef.current.ch2],
+      ch3: [...collectionBufferRef.current.ch3],
+    };
+    const capturedDuration = collectionStartedAtRef.current === null
+      ? collectionTime
+      : Date.now() - collectionStartedAtRef.current;
+    collectionStartedAtRef.current = null;
+    setCurrentWaveform({
+      ch1: capturedWaveform.ch1.slice(-LIVE_WAVEFORM_LIMIT),
+      ch2: capturedWaveform.ch2.slice(-LIVE_WAVEFORM_LIMIT),
+      ch3: capturedWaveform.ch3.slice(-LIVE_WAVEFORM_LIMIT),
+    });
+    await yieldToBrowser();
+
+    try {
+
     // 检查采集数据是否有效
-    if (currentWaveform.ch1.length === 0) {
+    if (capturedWaveform.ch1.length === 0) {
       setError('未采集到有效数据');
       return;
     }
@@ -585,7 +636,7 @@ export default function CollectionMode() {
       adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
     };
 
-    const pipelineResult = processWaveformUnified(currentWaveform, pipelineConfig);
+    const pipelineResult = processWaveformUnified(capturedWaveform, pipelineConfig);
     const processedWaveform = pipelineResult.processed;
     const qualityScore = pipelineResult.metadata.qualityScore;
 
@@ -607,7 +658,7 @@ export default function CollectionMode() {
       index: collectionHistory.length + 1,
       timestamp: new Date(),
       waveform: processedWaveform,
-      duration: collectionTime,
+      duration: capturedDuration,
       croppingMeta: {
         stage: croppingStage,
         confidence: croppingConfidence,
@@ -623,15 +674,15 @@ export default function CollectionMode() {
     };
 
     // 添加详细的波形诊断日志
-    const rawDurationMs = (currentWaveform.ch1.length / 500) * 1000;
-    console.log(`[采集 #${newCollection.index}] 原始波形长度: ${currentWaveform.ch1.length} 样本 (${rawDurationMs.toFixed(0)}ms)`);
-    console.log(`[采集 #${newCollection.index}] 计时器时长: ${collectionTime}ms`);
+    const rawDurationMs = (capturedWaveform.ch1.length / 500) * 1000;
+    console.log(`[采集 #${newCollection.index}] 原始波形长度: ${capturedWaveform.ch1.length} 样本 (${rawDurationMs.toFixed(0)}ms)`);
+    console.log(`[采集 #${newCollection.index}] 计时器时长: ${capturedDuration}ms`);
     console.log(`[采集 #${newCollection.index}] 指令: ${capturedCommandName}`);
     console.log(`[采集 #${newCollection.index}] 处理流程: ${pipelineResult.metadata.steps.join(' -> ')}`);
     console.log(`[采集 #${newCollection.index}] 处理流程评分: ${qualityScore.toFixed(1)}/100`);
 
-    setCollectionHistory([...collectionHistory, newCollection]);
-    setCollectionCount(collectionCount + 1);
+    setCollectionHistory((history) => [...history, newCollection]);
+    setCollectionCount((count) => count + 1);
     setSessionCommandName(capturedCommandName);
     setCommandName(capturedCommandName);
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
@@ -642,7 +693,10 @@ export default function CollectionMode() {
     setShowTrimUI(true);
     setPendingWaveform(newCollection);
     setTrimStart(0);
-    setTrimEnd(currentWaveform.ch1.length);
+    setTrimEnd(processedWaveform.ch1.length);
+    } finally {
+      setIsProcessingCapture(false);
+    }
   };
 
   // 应用裁剪
@@ -1127,19 +1181,19 @@ export default function CollectionMode() {
               </button>
               <button
                 onClick={handleStartCollection}
-                disabled={!isConnected}
+                disabled={!isConnected || isProcessingCapture || countdownTime > 0}
                 style={{
                   padding: '12px 24px',
-                  backgroundColor: isConnected ? '#d4af37' : '#666',
+                  backgroundColor: isConnected && !isProcessingCapture && countdownTime === 0 ? '#d4af37' : '#666',
                   color: '#000',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: isConnected ? 'pointer' : 'not-allowed',
+                  cursor: isConnected && !isProcessingCapture && countdownTime === 0 ? 'pointer' : 'not-allowed',
                   fontWeight: 'bold',
                   fontSize: '14px',
                 }}
               >
-                开始采集
+                {isProcessingCapture ? '处理中...' : countdownTime > 0 ? `准备中 ${countdownTime}` : '开始采集'}
               </button>
             </>
           ) : (

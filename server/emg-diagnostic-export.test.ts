@@ -31,6 +31,25 @@ describe('complete EMG diagnostic exports', () => {
     expect(payload.trainingCommands[0].collections[0].waveform.ch2).toEqual([8]);
   });
 
+  it('does not duplicate a processed waveform inside the recognition result', () => {
+    const processedWaveform = { ch1: [4], ch2: [5], ch3: [6], meta: { stage: 'success' } };
+    const payload = buildRecognitionDiagnosticPackage({
+      trials: [{
+        trialId: 'trial-compact',
+        startedAt: 10,
+        endedAt: 20,
+        rawWaveform: { ch1: [1], ch2: [2], ch3: [3], timestamps: [10] },
+        processedWaveform,
+        result: { predictedCommand: 'play', confidence: 88, processedWaveform },
+      }],
+      commands: [],
+      sampleRate: 500,
+    });
+
+    expect(payload.trials[0].processedWaveform).toEqual(processedWaveform);
+    expect(payload.trials[0].result).not.toHaveProperty('processedWaveform');
+  });
+
   it('keeps continuous sample columns aligned and reports truncation explicitly', () => {
     let capture = createContinuousSampleCapture(2);
     capture = appendContinuousSample(capture, {
