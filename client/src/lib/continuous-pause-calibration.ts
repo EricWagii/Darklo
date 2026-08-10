@@ -6,6 +6,8 @@ export interface RobustPauseDistribution {
 
 export interface PauseTimingModel {
   withinCharacter: RobustPauseDistribution;
+  withinCharacterAfterDot?: RobustPauseDistribution;
+  withinCharacterAfterDash?: RobustPauseDistribution;
   betweenCharacter: RobustPauseDistribution;
   boundaryMs: number;
   separationConfidence: number;
@@ -63,14 +65,20 @@ const fallbackModel = (boundaryMs: number): PauseTimingModel => ({
 
 export const buildPauseTimingModel = ({
   withinCharacterGapsMs,
+  withinCharacterGapsAfterDotMs = [],
+  withinCharacterGapsAfterDashMs = [],
   betweenCharacterGapsMs,
   fallbackBoundaryMs,
 }: {
   withinCharacterGapsMs: readonly number[];
+  withinCharacterGapsAfterDotMs?: readonly number[];
+  withinCharacterGapsAfterDashMs?: readonly number[];
   betweenCharacterGapsMs: readonly number[];
   fallbackBoundaryMs: number;
 }): PauseTimingModelResult => {
   const withinValues = withinCharacterGapsMs.filter((value) => Number.isFinite(value) && value >= 0);
+  const afterDotValues = withinCharacterGapsAfterDotMs.filter((value) => Number.isFinite(value) && value >= 0);
+  const afterDashValues = withinCharacterGapsAfterDashMs.filter((value) => Number.isFinite(value) && value >= 0);
   const betweenValues = betweenCharacterGapsMs.filter((value) => Number.isFinite(value) && value >= 0);
   if (withinValues.length < 4 || betweenValues.length < 2) {
     return {
@@ -90,6 +98,12 @@ export const buildPauseTimingModel = ({
     : fallbackBoundaryMs;
   const model: PauseTimingModel = {
     withinCharacter,
+    withinCharacterAfterDot: afterDotValues.length >= 2
+      ? buildDistribution(afterDotValues)
+      : undefined,
+    withinCharacterAfterDash: afterDashValues.length >= 2
+      ? buildDistribution(afterDashValues)
+      : undefined,
     betweenCharacter,
     boundaryMs,
     separationConfidence,
@@ -109,8 +123,17 @@ const distributionScore = (distribution: RobustPauseDistribution, gapMs: number)
   return -0.5 * z * z - Math.log(Math.max(1, distribution.spreadMs));
 };
 
-export const scorePauseGap = (model: PauseTimingModel, gapMs: number): PauseGapScore => {
-  const continuationScore = distributionScore(model.withinCharacter, gapMs);
+export const scorePauseGap = (
+  model: PauseTimingModel,
+  gapMs: number,
+  precedingSymbol?: '.' | '-'
+): PauseGapScore => {
+  const withinCharacter = precedingSymbol === '.'
+    ? model.withinCharacterAfterDot ?? model.withinCharacter
+    : precedingSymbol === '-'
+      ? model.withinCharacterAfterDash ?? model.withinCharacter
+      : model.withinCharacter;
+  const continuationScore = distributionScore(withinCharacter, gapMs);
   const boundaryScore = distributionScore(model.betweenCharacter, gapMs);
   const distance = Math.abs(boundaryScore - continuationScore);
   return {

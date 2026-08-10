@@ -138,6 +138,8 @@ export default function ContinuousCodeMode() {
   const [longDurations, setLongDurations] = useState<number[]>([]);
   const rhythmPulsesRef = useRef<PulseDetectorEvent[]>([]);
   const rhythmWithinGapsRef = useRef<number[]>([]);
+  const rhythmWithinDotGapsRef = useRef<number[]>([]);
+  const rhythmWithinDashGapsRef = useRef<number[]>([]);
   const rhythmBetweenGapsRef = useRef<number[]>([]);
   const rhythmAcceptedRef = useRef(0);
   const [rhythmPulseCount, setRhythmPulseCount] = useState(0);
@@ -228,6 +230,8 @@ export default function ContinuousCodeMode() {
     longDurationsRef.current = [];
     rhythmPulsesRef.current = [];
     rhythmWithinGapsRef.current = [];
+    rhythmWithinDotGapsRef.current = [];
+    rhythmWithinDashGapsRef.current = [];
     rhythmBetweenGapsRef.current = [];
     rhythmAcceptedRef.current = 0;
     setShortDurations([]);
@@ -276,6 +280,8 @@ export default function ContinuousCodeMode() {
     setDecoder(resetDecoder());
     rhythmPulsesRef.current = [];
     rhythmWithinGapsRef.current = [];
+    rhythmWithinDotGapsRef.current = [];
+    rhythmWithinDashGapsRef.current = [];
     rhythmBetweenGapsRef.current = [];
     rhythmAcceptedRef.current = 0;
     setRhythmPulseCount(0);
@@ -437,6 +443,8 @@ export default function ContinuousCodeMode() {
             }
 
             rhythmWithinGapsRef.current.push(...attempt.withinCharacterGapsMs);
+            rhythmWithinDotGapsRef.current.push(...attempt.withinCharacterGapsAfterDotMs);
+            rhythmWithinDashGapsRef.current.push(...attempt.withinCharacterGapsAfterDashMs);
             rhythmBetweenGapsRef.current.push(...attempt.betweenCharacterGapsMs);
             rhythmAcceptedRef.current += 1;
             setRhythmAcceptedCount(rhythmAcceptedRef.current);
@@ -450,6 +458,8 @@ export default function ContinuousCodeMode() {
             if (rhythmAcceptedRef.current >= RHYTHM_CALIBRATION_TARGET) {
               const timing = buildPauseTimingModel({
                 withinCharacterGapsMs: rhythmWithinGapsRef.current,
+                withinCharacterGapsAfterDotMs: rhythmWithinDotGapsRef.current,
+                withinCharacterGapsAfterDashMs: rhythmWithinDashGapsRef.current,
                 betweenCharacterGapsMs: rhythmBetweenGapsRef.current,
                 fallbackBoundaryMs: PACE_PRESETS.slow.characterBoundaryMs,
               });
@@ -593,6 +603,8 @@ export default function ContinuousCodeMode() {
         acceptedAttempts: rhythmAcceptedRef.current,
         targetAttempts: RHYTHM_CALIBRATION_TARGET,
         withinCharacterGapsMs: [...rhythmWithinGapsRef.current],
+        withinCharacterGapsAfterDotMs: [...rhythmWithinDotGapsRef.current],
+        withinCharacterGapsAfterDashMs: [...rhythmWithinDashGapsRef.current],
         betweenCharacterGapsMs: [...rhythmBetweenGapsRef.current],
         warning: rhythmCalibrationWarning,
       },
@@ -849,7 +861,7 @@ export default function ContinuousCodeMode() {
                   </label>
                 </div>
               )}
-              <p className="mt-4 text-sm text-secondary">强制分隔始终至少为普通字符边界的 1.8 倍；它不会回退已经确认的字符。</p>
+              <p className="mt-4 text-sm text-secondary">慢速预设使用 3 秒异常尾段恢复；自定义模式下，强制分隔至少为普通字符边界的 1.8 倍。两者都不会回退已经确认的字符。</p>
             </Card>
 
             <Card>

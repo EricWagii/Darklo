@@ -13,6 +13,8 @@ export type RhythmCalibrationAttemptResult =
       ok: true;
       symbols: string;
       withinCharacterGapsMs: number[];
+      withinCharacterGapsAfterDotMs: number[];
+      withinCharacterGapsAfterDashMs: number[];
       betweenCharacterGapsMs: number[];
     }
   | {
@@ -44,6 +46,8 @@ export const evaluateRhythmCalibrationAttempt = (
   }
 
   const withinCharacterGapsMs: number[] = [];
+  const withinCharacterGapsAfterDotMs: number[] = [];
+  const withinCharacterGapsAfterDashMs: number[] = [];
   const betweenCharacterGapsMs: number[] = [];
   for (let index = 0; index < pulses.length - 1; index += 1) {
     const gapMs = pulses[index + 1].startedAt - pulses[index].endedAt;
@@ -54,6 +58,11 @@ export const evaluateRhythmCalibrationAttempt = (
       betweenCharacterGapsMs.push(gapMs);
     } else {
       withinCharacterGapsMs.push(gapMs);
+      if (classifications[index] === 'dot') {
+        withinCharacterGapsAfterDotMs.push(gapMs);
+      } else {
+        withinCharacterGapsAfterDashMs.push(gapMs);
+      }
     }
   }
 
@@ -61,6 +70,8 @@ export const evaluateRhythmCalibrationAttempt = (
     ok: true,
     symbols,
     withinCharacterGapsMs,
+    withinCharacterGapsAfterDotMs,
+    withinCharacterGapsAfterDashMs,
     betweenCharacterGapsMs,
   };
 };

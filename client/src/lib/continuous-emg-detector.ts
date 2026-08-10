@@ -115,6 +115,7 @@ export const buildContinuousCalibration = ({
   // valid field-recorded long bites do not fall into the ambiguous region.
   const durationBoundaryMs = Math.sqrt(shortMedianMs * longMedianMs);
   const uncertaintyMarginMs = Math.max(30, Math.min(70, durationGap * 0.07));
+  const releaseDebounceMs = Math.max(90, Math.min(160, shortMedianMs * 0.25));
 
   return {
     ok: true,
@@ -129,7 +130,7 @@ export const buildContinuousCalibration = ({
         baselineNoise: baseline.noise,
         startupGuardMs: 750,
         minPulseMs: Math.max(70, shortMedianMs * 0.35),
-        releaseDebounceMs: 60,
+        releaseDebounceMs,
         maxPulseMs: Math.max(1_500, longMedianMs * 2.5),
       },
     },

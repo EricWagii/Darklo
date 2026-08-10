@@ -58,4 +58,22 @@ describe('continuous Morse pause calibration', () => {
     expect(short.continuationScore).toBeGreaterThan(short.boundaryScore);
     expect(long.boundaryScore).toBeGreaterThan(long.continuationScore);
   });
+
+  it('uses dash-conditioned recovery instead of the dot-dominated combined distribution', () => {
+    const dotGaps = [420, 440, 460, 480, 500, 520, 440, 460, 480, 500, 520, 540];
+    const dashGaps = [1_180, 1_220, 1_260, 1_300, 1_240, 1_280];
+    const { model } = buildPauseTimingModel({
+      withinCharacterGapsMs: [...dotGaps, ...dashGaps],
+      withinCharacterGapsAfterDotMs: dotGaps,
+      withinCharacterGapsAfterDashMs: dashGaps,
+      betweenCharacterGapsMs: [2_100, 2_180, 2_240, 2_300, 2_360, 2_420],
+      fallbackBoundaryMs: 1_800,
+    });
+
+    const afterDot = scorePauseGap(model, 1_240, '.');
+    const afterDash = scorePauseGap(model, 1_240, '-');
+
+    expect(afterDot.boundaryScore).toBeGreaterThan(afterDot.continuationScore);
+    expect(afterDash.continuationScore).toBeGreaterThan(afterDash.boundaryScore);
+  });
 });

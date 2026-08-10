@@ -87,6 +87,28 @@ const dedupeCandidates = (
 const bestPending = (candidates: readonly SegmentationCandidate[]): string =>
   candidates[0]?.pendingSymbols ?? '';
 
+const lastMorseSymbol = (symbols: string): MorseSymbol | undefined => {
+  const symbol = symbols.at(-1);
+  return symbol === '.' || symbol === '-' ? symbol : undefined;
+};
+
+const usablePauseModel = (config: StreamConfig): PauseTimingModel | null => {
+  const model = config.pauseTimingModel;
+  return model?.source === 'calibrated' && model.separationConfidence >= 0.5
+    ? model
+    : null;
+};
+
+const adaptiveBoundaryCeiling = (config: StreamConfig, model: PauseTimingModel): number => {
+  const modelCeiling = model.boundaryMs + model.betweenCharacter.spreadMs;
+  const configuredCeiling = config.characterBoundaryMs * 1.35;
+  const emergencyCeiling = Math.max(config.characterBoundaryMs, config.forceSplitMs - 100);
+  return Math.min(
+    emergencyCeiling,
+    Math.max(config.characterBoundaryMs, Math.min(configuredCeiling, modelCeiling))
+  );
+};
+
 const competitiveCandidates = (
   candidates: readonly SegmentationCandidate[],
   config: StreamConfig
@@ -202,18 +224,24 @@ export const appendStreamAlternatives = (
     const effectiveGap = next.lastSymbolEndedAt === null ? 0 : startedAt - next.lastSymbolEndedAt;
     const lower = config.characterBoundaryMs - config.boundaryUncertaintyMs;
     const upper = config.characterBoundaryMs + config.boundaryUncertaintyMs;
-    const pauseScores = config.pauseTimingModel
-      ? scorePauseGap(config.pauseTimingModel, effectiveGap)
-      : null;
-    const allowContinuation = pauseScores !== null || effectiveGap <= upper;
-    const allowBoundary = pauseScores !== null || effectiveGap >= lower;
-    const continuationAdjustment = pauseScores?.continuationScore
-      ?? -Math.max(0, effectiveGap - lower) / Math.max(1, config.boundaryUncertaintyMs);
-    const boundaryAdjustment = pauseScores?.boundaryScore
-      ?? -Math.abs(effectiveGap - config.characterBoundaryMs) / Math.max(1, config.boundaryUncertaintyMs);
+    const pauseModel = usablePauseModel(config);
+    const pauseCeiling = pauseModel ? adaptiveBoundaryCeiling(config, pauseModel) : null;
     const expanded: SegmentationCandidate[] = [];
+    let hasCandidateBoundary = false;
 
     for (const candidate of current) {
+      const pauseScores = pauseModel
+        ? scorePauseGap(pauseModel, effectiveGap, lastMorseSymbol(candidate.pendingSymbols))
+        : null;
+      const allowContinuation = pauseScores !== null
+        ? effectiveGap < (pauseCeiling ?? Number.POSITIVE_INFINITY)
+        : effectiveGap <= upper;
+      const allowBoundary = pauseScores !== null || effectiveGap >= lower;
+      const continuationAdjustment = pauseScores?.continuationScore
+        ?? -Math.max(0, effectiveGap - lower) / Math.max(1, config.boundaryUncertaintyMs);
+      const boundaryAdjustment = pauseScores?.boundaryScore
+        ?? -Math.abs(effectiveGap - config.characterBoundaryMs) / Math.max(1, config.boundaryUncertaintyMs);
+      hasCandidateBoundary ||= allowBoundary && allowContinuation;
       for (const alternative of input.alternatives) {
         if (allowContinuation && candidate.pendingSymbols.length < config.maxPendingSymbols) {
           const pendingSymbols = `${candidate.pendingSymbols}${alternative.symbol}`;
@@ -244,7 +272,7 @@ export const appendStreamAlternatives = (
       expanded.push({ committedText: '', pendingSymbols: fallback, score: -100 });
     }
     candidates = dedupeCandidates(expanded, config);
-    if (allowBoundary && allowContinuation) {
+    if (hasCandidateBoundary) {
       boundaryEvent = event(next, 'candidate-boundary', input.endedAt);
     }
   }
@@ -304,9 +332,13 @@ export const advanceStream = (
   if (!state.pendingSymbols || state.lastSymbolEndedAt === null) return state;
   const idleMs = now - state.lastSymbolEndedAt;
   if (idleMs >= config.forceSplitMs) return forceSplit(state, now, config);
-  if (config.pauseTimingModel) {
-    const pauseScore = scorePauseGap(config.pauseTimingModel, idleMs);
-    if (pauseScore.boundaryScore <= pauseScore.continuationScore + 0.35) {
+  const pauseModel = usablePauseModel(config);
+  if (pauseModel) {
+    const pauseScore = scorePauseGap(pauseModel, idleMs, lastMorseSymbol(state.pendingSymbols));
+    if (
+      idleMs < adaptiveBoundaryCeiling(config, pauseModel)
+      && pauseScore.boundaryScore <= pauseScore.continuationScore + 0.35
+    ) {
       return state;
     }
   } else if (idleMs < config.characterBoundaryMs) {

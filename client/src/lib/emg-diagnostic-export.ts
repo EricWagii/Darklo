@@ -169,6 +169,8 @@ export const buildContinuousDiagnosticPackage = (input: {
     acceptedAttempts: number;
     targetAttempts: number;
     withinCharacterGapsMs: number[];
+    withinCharacterGapsAfterDotMs: number[];
+    withinCharacterGapsAfterDashMs: number[];
     betweenCharacterGapsMs: number[];
     warning: string | null;
   };

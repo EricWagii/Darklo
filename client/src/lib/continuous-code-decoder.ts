@@ -32,7 +32,7 @@ export const PACE_PRESETS: Readonly<
   Record<Exclude<PaceMode, 'custom'>, Pick<StreamConfig, 'characterBoundaryMs' | 'forceSplitMs'>>
 > = Object.freeze({
   standard: Object.freeze({ characterBoundaryMs: 700, forceSplitMs: 2_500 }),
-  slow: Object.freeze({ characterBoundaryMs: 1_800, forceSplitMs: 4_500 }),
+  slow: Object.freeze({ characterBoundaryMs: 1_800, forceSplitMs: 3_000 }),
 });
 
 export const createDecoderState = (): DecoderState => ({

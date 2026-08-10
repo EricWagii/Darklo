@@ -165,6 +165,54 @@ describe('continuous Morse stream segmenter', () => {
     expect(state.events.filter((item) => item.kind === 'character-committed').map((item) => item.character)).toEqual(['S', 'O', 'S']);
   });
 
+  it('keeps natural 1200-1300 ms rests inside a calibrated dash sequence', () => {
+    const dotGaps = [420, 440, 460, 480, 500, 520, 440, 460, 480, 500, 520, 540];
+    const dashGaps = [1_180, 1_220, 1_260, 1_300, 1_240, 1_280];
+    const dashAwareConfig: StreamConfig = {
+      ...config,
+      characterBoundaryMs: 1_800,
+      forceSplitMs: 3_000,
+      pauseTimingModel: buildPauseTimingModel({
+        withinCharacterGapsMs: [...dotGaps, ...dashGaps],
+        withinCharacterGapsAfterDotMs: dotGaps,
+        withinCharacterGapsAfterDashMs: dashGaps,
+        betweenCharacterGapsMs: [2_100, 2_180, 2_240, 2_300, 2_360, 2_420],
+        fallbackBoundaryMs: 1_800,
+      }).model,
+    };
+
+    let state = createStreamState();
+    state = appendStreamSymbol(state, { symbol: '-', startedAt: 0, endedAt: 800 }, dashAwareConfig);
+    state = appendStreamSymbol(state, { symbol: '-', startedAt: 2_040, endedAt: 2_840 }, dashAwareConfig);
+    state = appendStreamSymbol(state, { symbol: '-', startedAt: 4_120, endedAt: 4_920 }, dashAwareConfig);
+    state = advanceStream(state, 7_200, dashAwareConfig);
+
+    expect(state.committedText).toBe('O');
+    expect(state.pendingSymbols).toBe('');
+  });
+
+  it('does not let an overlapping pause model delay the configured character boundary', () => {
+    const overlappingModel = buildPauseTimingModel({
+      withinCharacterGapsMs: [700, 820, 940, 1_020, 1_080],
+      betweenCharacterGapsMs: [900, 1_000, 1_100, 1_180],
+      fallbackBoundaryMs: 700,
+    }).model;
+    expect(overlappingModel.separationConfidence).toBeLessThan(0.5);
+
+    const boundedConfig: StreamConfig = {
+      ...config,
+      characterBoundaryMs: 700,
+      forceSplitMs: 3_000,
+      pauseTimingModel: overlappingModel,
+    };
+    let state = createStreamState();
+    state = appendStreamSymbol(state, { symbol: '.', endedAt: 100 }, boundedConfig);
+    state = advanceStream(state, 801, boundedConfig);
+
+    expect(state.committedText).toBe('E');
+    expect(state.pendingSymbols).toBe('');
+  });
+
   it('exposes only the best uncommitted interpretation as tentative text', () => {
     const state = {
       ...createStreamState(),

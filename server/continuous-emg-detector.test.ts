@@ -138,4 +138,56 @@ describe('continuous EMG calibration', () => {
       expect(result.calibration.durationBoundaryMs).toBeLessThan(720);
     }
   });
+
+  it('calibrates release debounce so a brief internal dropout stays one contraction', () => {
+    const result = buildContinuousCalibration({
+      baselineSamples: quiet(750),
+      shortDurationsMs: [360, 400, 420],
+      longDurationsMs: [850, 900, 950],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.calibration.detectorConfig.releaseDebounceMs).toBeGreaterThanOrEqual(90);
+
+    const detector = new ContinuousEmgDetector({
+      ...result.calibration.detectorConfig,
+      startupGuardMs: 0,
+    });
+    const values = [
+      ...quiet(20),
+      ...bipolarBurst(75),
+      ...quiet(35),
+      ...bipolarBurst(75),
+      ...quiet(60),
+    ];
+    const pulses = feed(detector, values).filter((event) => event.type === 'pulse');
+
+    expect(pulses).toHaveLength(1);
+  });
+
+  it('still separates two intentional contractions after calibrated debounce', () => {
+    const result = buildContinuousCalibration({
+      baselineSamples: quiet(750),
+      shortDurationsMs: [360, 400, 420],
+      longDurationsMs: [850, 900, 950],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const detector = new ContinuousEmgDetector({
+      ...result.calibration.detectorConfig,
+      startupGuardMs: 0,
+    });
+    const values = [
+      ...quiet(20),
+      ...bipolarBurst(75),
+      ...quiet(90),
+      ...bipolarBurst(75),
+      ...quiet(60),
+    ];
+    const pulses = feed(detector, values).filter((event) => event.type === 'pulse');
+
+    expect(pulses).toHaveLength(2);
+  });
 });

@@ -36,6 +36,8 @@ describe('continuous Morse rhythm calibration attempt', () => {
     if (!result.ok) return;
     expect(result.symbols).toBe('...---...');
     expect(result.withinCharacterGapsMs).toEqual([460, 500, 1_020, 1_060, 480, 520]);
+    expect(result.withinCharacterGapsAfterDotMs).toEqual([460, 500, 480, 520]);
+    expect(result.withinCharacterGapsAfterDashMs).toEqual([1_020, 1_060]);
     expect(result.betweenCharacterGapsMs).toEqual([1_480, 1_500]);
   });
 
