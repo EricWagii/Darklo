@@ -4,6 +4,12 @@ export interface MorseEntry {
   group: 'letter' | 'digit';
 }
 
+export interface MorseReferenceToken {
+  character: string;
+  code: string;
+  kind: 'character' | 'word-boundary' | 'unsupported';
+}
+
 const LETTER_CODES = [
   ['A', '.-'], ['B', '-...'], ['C', '-.-.'], ['D', '-..'], ['E', '.'],
   ['F', '..-.'], ['G', '--.'], ['H', '....'], ['I', '..'], ['J', '.---'],
@@ -42,3 +48,15 @@ export const decodeMorse = (code: string): string | null =>
 
 export const isMorsePrefix = (code: string): boolean =>
   code.length > 0 && VALID_PREFIXES.has(code);
+
+export const encodeMorseReference = (value: string): MorseReferenceToken[] =>
+  Array.from(value.toUpperCase()).map((character) => {
+    if (/\s/.test(character)) {
+      return { character: ' ', code: '/', kind: 'word-boundary' };
+    }
+
+    const code = MORSE_BY_CHARACTER[character];
+    return code
+      ? { character, code, kind: 'character' }
+      : { character, code: '?', kind: 'unsupported' };
+  });

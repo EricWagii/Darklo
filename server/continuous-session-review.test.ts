@@ -34,6 +34,10 @@ describe('continuous session review', () => {
     expect(html).toContain('识别正确');
     expect(html).toContain('提交修正');
     expect(html).toContain('标记无效');
+    expect(html).toContain('目标编码');
+    expect(html).toContain('data-role="target-morse-reference"');
+    expect(html).toContain('...');
+    expect(html).toContain('---');
   });
 
   it('offers optional event-level correction labels', () => {

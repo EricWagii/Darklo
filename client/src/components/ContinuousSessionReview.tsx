@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Check, CircleX, FilePenLine } from 'lucide-react';
 import { Button } from '@/components/PremiumComponents';
 import type { StreamEvent } from '@/lib/continuous-stream-segmenter';
+import { encodeMorseReference } from '@/lib/morse-code';
 import type {
   ContinuousEvaluationMode,
   ContinuousEventCorrection,
@@ -70,6 +71,10 @@ export function ContinuousSessionReview({
       .reverse(),
     [events]
   );
+  const targetMorseReference = useMemo(
+    () => encodeMorseReference(targetText),
+    [targetText]
+  );
 
   return (
     <div className="space-y-5" data-role="continuous-session-review">
@@ -94,17 +99,45 @@ export function ContinuousSessionReview({
       </div>
 
       {mode === 'scripted' && (
-        <label className="block text-sm text-secondary">
-          目标文本
-          <input
-            className="input mt-2 font-mono uppercase"
-            style={{ letterSpacing: 0 }}
-            value={targetText}
-            disabled={locked}
-            placeholder="例如 SOS 或 DARKLO27"
-            onChange={(event) => onTargetTextChange(event.target.value)}
-          />
-        </label>
+        <div>
+          <label className="block text-sm text-secondary">
+            目标文本
+            <input
+              className="input mt-2 font-mono uppercase"
+              style={{ letterSpacing: 0 }}
+              value={targetText}
+              disabled={locked}
+              placeholder="例如 SOS 或 DARKLO27"
+              onChange={(event) => onTargetTextChange(event.target.value)}
+            />
+          </label>
+          {targetMorseReference.length > 0 && (
+            <div className="mt-3" data-role="target-morse-reference">
+              <div className="mb-2 text-xs text-secondary">目标编码</div>
+              <div
+                className="overflow-x-auto border px-2 py-2"
+                style={{ borderColor: '#263226', backgroundColor: '#080b08' }}
+                aria-label="目标文本对应的摩斯编码"
+              >
+                <div className="flex min-w-max items-stretch font-mono" style={{ letterSpacing: 0 }}>
+                  {targetMorseReference.map((token, index) => (
+                    <div
+                      key={`${index}-${token.character}`}
+                      className={`flex min-w-14 shrink-0 flex-col items-center justify-center border-r px-3 py-1 last:border-r-0 ${
+                        token.kind === 'unsupported' ? 'text-orange-400' : token.kind === 'word-boundary' ? 'text-secondary' : 'text-lime-300'
+                      }`}
+                      style={{ borderColor: '#263226' }}
+                      title={token.kind === 'unsupported' ? `${token.character} 暂不支持` : undefined}
+                    >
+                      <span className="text-xs font-semibold">{token.kind === 'word-boundary' ? '空格' : token.character}</span>
+                      <span className="mt-1 text-sm">{token.code}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {reviewOpen && (

@@ -3,6 +3,7 @@ import {
   CHARACTER_BY_MORSE,
   MORSE_BY_CHARACTER,
   MORSE_ENTRIES,
+  encodeMorseReference,
   decodeMorse,
   isMorsePrefix,
 } from '../client/src/lib/morse-code';
@@ -32,5 +33,20 @@ describe('canonical Morse mapping', () => {
     expect(isMorsePrefix('....-')).toBe(true);
     expect(isMorsePrefix('......')).toBe(false);
     expect(decodeMorse('......')).toBeNull();
+  });
+
+  it('encodes a target phrase into character, word-boundary, and unsupported reference tokens', () => {
+    expect(encodeMorseReference('sos 2')).toEqual([
+      { character: 'S', code: '...', kind: 'character' },
+      { character: 'O', code: '---', kind: 'character' },
+      { character: 'S', code: '...', kind: 'character' },
+      { character: ' ', code: '/', kind: 'word-boundary' },
+      { character: '2', code: '..---', kind: 'character' },
+    ]);
+    expect(encodeMorseReference('A?')).toEqual([
+      { character: 'A', code: '.-', kind: 'character' },
+      { character: '?', code: '?', kind: 'unsupported' },
+    ]);
+    expect(encodeMorseReference('')).toEqual([]);
   });
 });
