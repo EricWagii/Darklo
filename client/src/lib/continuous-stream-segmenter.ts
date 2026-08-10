@@ -1,4 +1,5 @@
 import { decodeMorse, isMorsePrefix } from './morse-code';
+import { scorePauseGap, type PauseTimingModel } from './continuous-pause-calibration';
 
 export type MorseSymbol = '.' | '-';
 export type StreamEventKind =
@@ -16,6 +17,13 @@ export interface StreamConfig {
   boundaryUncertaintyMs: number;
   maxCandidates: number;
   maxPendingSymbols: number;
+  pauseTimingModel?: PauseTimingModel;
+  candidateCommitScoreWindow?: number;
+}
+
+export interface SymbolAlternative {
+  symbol: MorseSymbol;
+  scoreAdjustment: number;
 }
 
 export interface StreamEvent {
@@ -78,6 +86,16 @@ const dedupeCandidates = (
 const bestPending = (candidates: readonly SegmentationCandidate[]): string =>
   candidates[0]?.pendingSymbols ?? '';
 
+const competitiveCandidates = (
+  candidates: readonly SegmentationCandidate[],
+  config: StreamConfig
+): readonly SegmentationCandidate[] => {
+  if (candidates.length <= 1) return candidates;
+  const window = config.candidateCommitScoreWindow ?? (config.pauseTimingModel ? 3 : Number.POSITIVE_INFINITY);
+  const bestScore = candidates[0].score;
+  return candidates.filter((candidate) => candidate.score >= bestScore - window);
+};
+
 const appendCommittedEvents = (
   state: StreamState,
   text: string,
@@ -97,19 +115,21 @@ const appendCommittedEvents = (
 const releaseStablePrefix = (
   state: StreamState,
   candidates: readonly SegmentationCandidate[],
-  at: number
+  at: number,
+  config: StreamConfig
 ): StreamState => {
-  const stable = commonPrefix(candidates.map((candidate) => candidate.committedText));
+  const competitive = competitiveCandidates(candidates, config);
+  const stable = commonPrefix(competitive.map((candidate) => candidate.committedText));
   if (!stable) {
     return {
       ...state,
-      candidates,
-      pendingSymbols: bestPending(candidates),
-      status: candidates.length > 1 ? 'candidate' : 'collecting',
+      candidates: competitive,
+      pendingSymbols: bestPending(competitive),
+      status: competitive.length > 1 ? 'candidate' : 'collecting',
     };
   }
 
-  const stripped = candidates.map((candidate) => ({
+  const stripped = competitive.map((candidate) => ({
     ...candidate,
     committedText: candidate.committedText.slice(stable.length),
   }));
@@ -143,6 +163,20 @@ export const appendStreamSymbol = (
   state: StreamState,
   input: { symbol: MorseSymbol; startedAt?: number; endedAt: number },
   config: StreamConfig
+): StreamState => appendStreamAlternatives(state, {
+  alternatives: [{ symbol: input.symbol, scoreAdjustment: 0 }],
+  startedAt: input.startedAt,
+  endedAt: input.endedAt,
+}, config);
+
+export const appendStreamAlternatives = (
+  state: StreamState,
+  input: {
+    alternatives: readonly SymbolAlternative[];
+    startedAt?: number;
+    endedAt: number;
+  },
+  config: StreamConfig
 ): StreamState => {
   let next = state;
   const startedAt = input.startedAt ?? input.endedAt;
@@ -156,38 +190,56 @@ export const appendStreamSymbol = (
   let boundaryEvent: StreamEvent | null = null;
 
   if (current.length === 0) {
-    candidates = [{ committedText: '', pendingSymbols: input.symbol, score: 0 }];
+    candidates = input.alternatives
+      .filter(({ symbol }) => isMorsePrefix(symbol))
+      .map(({ symbol, scoreAdjustment }) => ({
+        committedText: '',
+        pendingSymbols: symbol,
+        score: scoreAdjustment,
+      }));
   } else {
     const effectiveGap = next.lastSymbolEndedAt === null ? 0 : startedAt - next.lastSymbolEndedAt;
     const lower = config.characterBoundaryMs - config.boundaryUncertaintyMs;
     const upper = config.characterBoundaryMs + config.boundaryUncertaintyMs;
-    const allowContinuation = effectiveGap <= upper;
-    const allowBoundary = effectiveGap >= lower;
+    const pauseScores = config.pauseTimingModel
+      ? scorePauseGap(config.pauseTimingModel, effectiveGap)
+      : null;
+    const allowContinuation = pauseScores !== null || effectiveGap <= upper;
+    const allowBoundary = pauseScores !== null || effectiveGap >= lower;
+    const continuationAdjustment = pauseScores?.continuationScore
+      ?? -Math.max(0, effectiveGap - lower) / Math.max(1, config.boundaryUncertaintyMs);
+    const boundaryAdjustment = pauseScores?.boundaryScore
+      ?? -Math.abs(effectiveGap - config.characterBoundaryMs) / Math.max(1, config.boundaryUncertaintyMs);
     const expanded: SegmentationCandidate[] = [];
 
     for (const candidate of current) {
-      if (allowContinuation && candidate.pendingSymbols.length < config.maxPendingSymbols) {
-        const pendingSymbols = `${candidate.pendingSymbols}${input.symbol}`;
-        expanded.push({
-          ...candidate,
-          pendingSymbols,
-          score: candidate.score - Math.max(0, effectiveGap - lower) / Math.max(1, config.boundaryUncertaintyMs),
-        });
-      }
-      if (allowBoundary) {
-        const character = decodeMorse(candidate.pendingSymbols);
-        if (character) {
-          expanded.push({
-            committedText: `${candidate.committedText}${character}`,
-            pendingSymbols: input.symbol,
-            score: candidate.score - Math.abs(effectiveGap - config.characterBoundaryMs) / Math.max(1, config.boundaryUncertaintyMs),
-          });
+      for (const alternative of input.alternatives) {
+        if (allowContinuation && candidate.pendingSymbols.length < config.maxPendingSymbols) {
+          const pendingSymbols = `${candidate.pendingSymbols}${alternative.symbol}`;
+          if (isMorsePrefix(pendingSymbols)) {
+            expanded.push({
+              ...candidate,
+              pendingSymbols,
+              score: candidate.score + continuationAdjustment + alternative.scoreAdjustment,
+            });
+          }
+        }
+        if (allowBoundary) {
+          const character = decodeMorse(candidate.pendingSymbols);
+          if (character) {
+            expanded.push({
+              committedText: `${candidate.committedText}${character}`,
+              pendingSymbols: alternative.symbol,
+              score: candidate.score + boundaryAdjustment + alternative.scoreAdjustment,
+            });
+          }
         }
       }
     }
 
     if (expanded.length === 0) {
-      const fallback = `${bestPending(current)}${input.symbol}`.slice(-config.maxPendingSymbols);
+      const primary = input.alternatives[0]?.symbol ?? '.';
+      const fallback = `${bestPending(current)}${primary}`.slice(-config.maxPendingSymbols);
       expanded.push({ committedText: '', pendingSymbols: fallback, score: -100 });
     }
     candidates = dedupeCandidates(expanded, config);
@@ -200,7 +252,7 @@ export const appendStreamSymbol = (
     ...next.events,
     ...(boundaryEvent ? [boundaryEvent] : []),
     event({ ...next, events: [...next.events, ...(boundaryEvent ? [boundaryEvent] : [])] }, 'symbol-pending', input.endedAt, {
-      symbol: input.symbol,
+      symbol: input.alternatives[0]?.symbol,
     }),
   ];
   const withSymbol: StreamState = {
@@ -211,8 +263,11 @@ export const appendStreamSymbol = (
     lastSymbolEndedAt: input.endedAt,
     status: candidates.length > 1 ? 'candidate' : isMorsePrefix(bestPending(candidates)) ? 'collecting' : 'uncertain',
   };
-  return releaseStablePrefix(withSymbol, candidates, input.endedAt);
+  return releaseStablePrefix(withSymbol, candidates, input.endedAt, config);
 };
+
+export const getTentativeText = (state: StreamState): string =>
+  state.candidates[0]?.committedText ?? '';
 
 interface FinalCandidate {
   text: string;
@@ -248,12 +303,27 @@ export const advanceStream = (
   if (!state.pendingSymbols || state.lastSymbolEndedAt === null) return state;
   const idleMs = now - state.lastSymbolEndedAt;
   if (idleMs >= config.forceSplitMs) return forceSplit(state, now, config);
-  if (idleMs < config.characterBoundaryMs) return state;
+  if (config.pauseTimingModel) {
+    const pauseScore = scorePauseGap(config.pauseTimingModel, idleMs);
+    if (pauseScore.boundaryScore <= pauseScore.continuationScore + 0.35) {
+      return state;
+    }
+  } else if (idleMs < config.characterBoundaryMs) {
+    return state;
+  }
 
-  const released = releaseStablePrefix(state, state.candidates, now);
+  const released = releaseStablePrefix(state, state.candidates, now, config);
   const finals = finalizeCandidates(released);
-  const distinct = Array.from(new Set(finals.map((candidate) => candidate.text)));
-  if (distinct.length === 1) return commitFinalText(released, distinct[0], now, finals[0]?.code);
+  const competitiveFinals = competitiveCandidates(
+    finals.map(({ text, score, code }) => ({ committedText: text, pendingSymbols: code, score })),
+    config
+  ).map((candidate) => ({
+    text: candidate.committedText,
+    code: candidate.pendingSymbols,
+    score: candidate.score,
+  }));
+  const distinct = Array.from(new Set(competitiveFinals.map((candidate) => candidate.text)));
+  if (distinct.length === 1) return commitFinalText(released, distinct[0], now, competitiveFinals[0]?.code);
   return {
     ...released,
     status: 'candidate',

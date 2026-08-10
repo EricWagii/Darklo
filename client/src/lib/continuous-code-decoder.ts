@@ -1,5 +1,6 @@
 import {
   advanceStream,
+  appendStreamAlternatives,
   appendStreamSymbol,
   createStreamState,
   forceSplit,
@@ -68,15 +69,27 @@ export const appendPulse = (
   const classification = classifyPulseDuration(pulse.durationMs, config);
 
   if (classification === 'uncertain') {
+    const lowerBoundary = config.durationBoundaryMs - config.uncertaintyMarginMs;
+    const upperBoundary = config.durationBoundaryMs + config.uncertaintyMarginMs;
+    const position = Math.min(1, Math.max(0, (pulse.durationMs - lowerBoundary) / Math.max(1, upperBoundary - lowerBoundary)));
+    const stream = appendStreamAlternatives(state, {
+      alternatives: [
+        { symbol: '.', scoreAdjustment: -position * 2 },
+        { symbol: '-', scoreAdjustment: -(1 - position) * 2 },
+      ],
+      startedAt: pulse.startedAt,
+      endedAt: pulse.endedAt,
+    }, config);
     return {
       ...state,
+      ...stream,
       status: 'uncertain',
       lastClassification: classification,
       uncertainPulseCount: state.uncertainPulseCount + 1,
       events: [
-        ...state.events,
+        ...stream.events,
         {
-          id: `${pulse.endedAt}-${state.events.length}-uncertain`,
+          id: `${pulse.endedAt}-${stream.events.length}-uncertain`,
           kind: 'uncertain',
           at: pulse.endedAt,
           reason: 'uncertain-pulse',

@@ -4,9 +4,11 @@ import {
   appendStreamSymbol,
   createStreamState,
   forceSplit,
+  getTentativeText,
   undoStream,
   type StreamConfig,
 } from '../client/src/lib/continuous-stream-segmenter';
+import { buildPauseTimingModel } from '../client/src/lib/continuous-pause-calibration';
 
 const config: StreamConfig = {
   characterBoundaryMs: 700,
@@ -14,6 +16,18 @@ const config: StreamConfig = {
   boundaryUncertaintyMs: 120,
   maxCandidates: 16,
   maxPendingSymbols: 24,
+};
+
+const adaptiveConfig: StreamConfig = {
+  ...config,
+  characterBoundaryMs: 1_550,
+  forceSplitMs: 4_500,
+  candidateCommitScoreWindow: 1.5,
+  pauseTimingModel: buildPauseTimingModel({
+    withinCharacterGapsMs: [880, 940, 1_000, 1_040, 1_080, 1_120],
+    betweenCharacterGapsMs: [1_650, 1_720, 1_780, 1_840],
+    fallbackBoundaryMs: 1_550,
+  }).model,
 };
 
 describe('continuous Morse stream segmenter', () => {
@@ -116,5 +130,49 @@ describe('continuous Morse stream segmenter', () => {
     expect(state.committedText).toBe('E');
     state = undoStream(state);
     expect(state.committedText).toBe('');
+  });
+
+  it('keeps 1000-1100 ms dash rests inside O and commits SOS incrementally', () => {
+    let state = createStreamState();
+    const appendCharacter = (
+      symbols: readonly ('.' | '-')[],
+      firstStartedAt: number,
+      withinGapMs: number
+    ) => {
+      let startedAt = firstStartedAt;
+      for (const symbol of symbols) {
+        const duration = symbol === '.' ? 300 : 800;
+        state = appendStreamSymbol(state, { symbol, startedAt, endedAt: startedAt + duration }, adaptiveConfig);
+        startedAt += duration + withinGapMs;
+      }
+      return startedAt - withinGapMs;
+    };
+
+    const s1EndedAt = appendCharacter(['.', '.', '.'], 100, 940);
+    state = advanceStream(state, s1EndedAt + 1_780, adaptiveConfig);
+    expect(state.committedText).toBe('S');
+
+    const oEndedAt = appendCharacter(['-', '-', '-'], s1EndedAt + 1_820, 1_060);
+    state = advanceStream(state, oEndedAt + 1_780, adaptiveConfig);
+    expect(state.committedText).toBe('SO');
+
+    const s2EndedAt = appendCharacter(['.', '.', '.'], oEndedAt + 1_820, 1_000);
+    state = advanceStream(state, s2EndedAt + 1_780, adaptiveConfig);
+
+    expect(state.committedText).toBe('SOS');
+    expect(state.pendingSymbols).toBe('');
+    expect(state.events.filter((item) => item.kind === 'character-committed').map((item) => item.character)).toEqual(['S', 'O', 'S']);
+  });
+
+  it('exposes only the best uncommitted interpretation as tentative text', () => {
+    const state = {
+      ...createStreamState(),
+      candidates: [
+        { committedText: 'SO', pendingSymbols: '.', score: 3 },
+        { committedText: 'ST', pendingSymbols: '-', score: 1 },
+      ],
+    };
+
+    expect(getTentativeText(state)).toBe('SO');
   });
 });
