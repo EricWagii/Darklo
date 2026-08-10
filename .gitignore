@@ -121,3 +121,5 @@ client/public/__manus__/
 
 # Exported documentation binaries
 *.pdf
+.vercel/
+.env.local
