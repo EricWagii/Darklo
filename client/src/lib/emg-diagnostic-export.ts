@@ -61,6 +61,12 @@ export interface ContinuousSampleInput {
 
 const nowIso = () => new Date().toISOString();
 
+export const createContinuousSessionId = (): string => {
+  const randomId = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `continuous-${randomId}`;
+};
+
 export const createContinuousSampleCapture = (maxSamples: number): ContinuousSampleCapture => ({
   maxSamples: Math.max(1, Math.floor(maxSamples)),
   totalSamplesObserved: 0,
@@ -125,6 +131,9 @@ export const buildRecognitionDiagnosticPackage = (input: {
 });
 
 export const buildContinuousDiagnosticPackage = (input: {
+  sessionId?: string;
+  sessionStartedAt?: string;
+  sessionEndedAt?: string | null;
   capture: ContinuousSampleCapture;
   sampleRate: number;
   sourceChannel: string;
@@ -140,34 +149,84 @@ export const buildContinuousDiagnosticPackage = (input: {
   baselineStats: unknown;
   shortDurationsMs: number[];
   longDurationsMs: number[];
+  rhythmCalibration?: {
+    pattern: string;
+    acceptedAttempts: number;
+    targetAttempts: number;
+    withinCharacterGapsMs: number[];
+    betweenCharacterGapsMs: number[];
+    warning: string | null;
+  };
   decoder: unknown;
+  tentativeText?: string;
   timeline: unknown[];
   evaluation?: ContinuousSessionEvaluation | null;
-}) => ({
-  exportFormat: 'darklo-emg-complete-diagnostic',
-  version: '2.0',
-  sourcePage: 'continuous-neuromuscular-decoder' as const,
-  exportedAt: nowIso(),
-  sampleRate: input.sampleRate,
-  sourceChannel: input.sourceChannel,
-  session: {
-    phase: input.phase,
-    paceMode: input.paceMode,
-    evaluationProtocol: input.evaluationProtocol ?? null,
-    decoderConfig: input.decoderConfig,
-  },
-  calibration: {
-    baselineSamples: input.baselineSamples,
-    baselineStats: input.baselineStats,
-    shortDurationsMs: input.shortDurationsMs,
-    longDurationsMs: input.longDurationsMs,
-    result: input.calibration,
-  },
-  decoder: input.decoder,
-  timeline: input.timeline,
-  evaluation: input.evaluation ?? null,
-  sampleCapture: input.capture,
-});
+}) => {
+  const decoder = input.decoder && typeof input.decoder === 'object'
+    ? input.decoder as Record<string, unknown>
+    : {};
+  const candidates = Array.isArray(decoder.candidates) ? decoder.candidates : [];
+  const events = Array.isArray(decoder.events)
+    ? decoder.events.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : [];
+  const firstMs = input.capture.columns.timestamps[0] ?? null;
+  const lastMs = input.capture.columns.timestamps.at(-1) ?? null;
+  const calibration = input.calibration && typeof input.calibration === 'object'
+    ? input.calibration as Record<string, unknown>
+    : {};
+
+  return {
+    exportFormat: 'darklo-emg-complete-diagnostic',
+    version: '2.1',
+    sourcePage: 'continuous-neuromuscular-decoder' as const,
+    exportedAt: nowIso(),
+    sampleRate: input.sampleRate,
+    sourceChannel: input.sourceChannel,
+    session: {
+      sessionId: input.sessionId ?? createContinuousSessionId(),
+      wallClock: {
+        startedAt: input.sessionStartedAt ?? null,
+        endedAt: input.sessionEndedAt ?? null,
+      },
+      phase: input.phase,
+      paceMode: input.paceMode,
+      evaluationProtocol: input.evaluationProtocol ?? null,
+      decoderConfig: input.decoderConfig,
+    },
+    timing: {
+      clockDomain: 'monotonic-session-ms' as const,
+      sampleRange: {
+        firstMs,
+        lastMs,
+        elapsedMs: firstMs === null || lastMs === null ? null : Math.max(0, lastMs - firstMs),
+      },
+      rhythmCalibration: input.rhythmCalibration ?? null,
+      pauseTimingModel: calibration.pauseTimingModel ?? null,
+    },
+    calibration: {
+      baselineSamples: input.baselineSamples,
+      baselineStats: input.baselineStats,
+      shortDurationsMs: input.shortDurationsMs,
+      longDurationsMs: input.longDurationsMs,
+      result: input.calibration,
+    },
+    adaptiveDecoding: {
+      candidateScores: candidates,
+      boundaryDecisions: events.filter((item) =>
+        item.kind === 'candidate-boundary'
+        || item.kind === 'confirmed-boundary'
+        || item.kind === 'character-committed'
+      ),
+      pulseAlternatives: events.filter((item) => Array.isArray(item.alternatives)),
+      tentativeOutput: input.tentativeText ?? '',
+      finalStableOutput: typeof decoder.committedText === 'string' ? decoder.committedText : '',
+    },
+    decoder: input.decoder,
+    timeline: input.timeline,
+    evaluation: input.evaluation ?? null,
+    sampleCapture: input.capture,
+  };
+};
 
 export const downloadDiagnosticJson = (payload: unknown, filenamePrefix: string): void => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');

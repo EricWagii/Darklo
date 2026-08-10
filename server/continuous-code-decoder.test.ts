@@ -34,7 +34,14 @@ describe('streaming continuous code decoder', () => {
     expect(state.candidates.map((candidate) => candidate.pendingSymbols)).toEqual(['.', '-']);
     expect(state.lastClassification).toBe('uncertain');
     expect(state.uncertainPulseCount).toBe(1);
-    expect(state.events.at(-1)).toMatchObject({ kind: 'uncertain', reason: 'uncertain-pulse' });
+    expect(state.events.at(-1)).toMatchObject({
+      kind: 'uncertain',
+      reason: 'uncertain-pulse',
+      alternatives: [
+        { symbol: '.', scoreAdjustment: expect.any(Number) },
+        { symbol: '-', scoreAdjustment: expect.any(Number) },
+      ],
+    });
   });
 
   it('decodes fluent AT input without inserting automatic spaces', () => {

@@ -25,4 +25,12 @@ describe('continuous code page layout', () => {
     expect(source).toContain('standbyLabel={streamStandbyLabel}');
     expect(source).not.toContain('disabled={!calibrationReady || (evaluationMode === \'scripted\' && !targetText)}');
   });
+
+  it('shows stable and tentative streaming text using decoder evidence only', () => {
+    const source = readSource('client/src/pages/ContinuousCodeMode.tsx');
+    expect(source).toContain('getTentativeText(decoder)');
+    expect(source).toContain('tentativeText=');
+    expect(source).toContain('sessionClockRef.current.now()');
+    expect(source).not.toContain('forceSplitDecoder(current, Date.now()');
+  });
 });

@@ -22,6 +22,7 @@ const renderPanel = (
   renderToStaticMarkup(
     React.createElement(ContinuousCodeStreamPanel, {
       decodedText,
+      tentativeText: decodedText ? 'O' : '',
       pendingSymbols: '.',
       events,
       status,
@@ -48,6 +49,10 @@ describe('continuous code stream panel', () => {
     expect(html).toContain('data-role="live-tail-strip"');
     expect(html).toContain('data-role="decoded-output-strip"');
     expect(html).toContain('data-role="typing-caret"');
+    expect(html).toContain('data-role="confirmed-output"');
+    expect(html).toContain('data-role="tentative-output"');
+    expect(html).toContain('text-slate-100');
+    expect(html).toContain('text-lime-300');
     expect(html).toContain('data-role="integrated-emg-waveform"');
     expect(html).toContain('aria-label="CH2 实时肌电波形"');
     expect(html).toContain('overflow-x-auto');

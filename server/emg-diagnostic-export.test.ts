@@ -4,6 +4,7 @@ import {
   buildRecognitionDiagnosticPackage,
   createContinuousSampleCapture,
   appendContinuousSample,
+  createContinuousSessionId,
 } from '../client/src/lib/emg-diagnostic-export';
 
 describe('complete EMG diagnostic exports', () => {
@@ -74,6 +75,9 @@ describe('complete EMG diagnostic exports', () => {
     expect(capture.captureTruncated).toBe(true);
 
     const payload = buildContinuousDiagnosticPackage({
+      sessionId: 'continuous-session-1',
+      sessionStartedAt: '2026-08-10T09:00:00.000Z',
+      sessionEndedAt: '2026-08-10T09:01:00.000Z',
       capture,
       sampleRate: 500,
       sourceChannel: 'CH2',
@@ -86,7 +90,25 @@ describe('complete EMG diagnostic exports', () => {
       baselineStats: null,
       shortDurationsMs: [],
       longDurationsMs: [],
-      decoder: { committedText: 'A', pendingSymbols: '', events: [] },
+      rhythmCalibration: {
+        pattern: '...---...',
+        acceptedAttempts: 3,
+        targetAttempts: 3,
+        withinCharacterGapsMs: [400, 420, 450, 470],
+        betweenCharacterGapsMs: [1_200, 1_250],
+        warning: null,
+      },
+      decoder: {
+        committedText: 'A',
+        pendingSymbols: '',
+        candidates: [{ committedText: 'A', pendingSymbols: '', score: -2 }],
+        events: [
+          { id: 'b1', kind: 'candidate-boundary', at: 1_200 },
+          { id: 'u1', kind: 'uncertain', at: 1_400, alternatives: [{ symbol: '.', scoreAdjustment: -0.2 }, { symbol: '-', scoreAdjustment: -1.8 }] },
+          { id: 'c1', kind: 'character-committed', at: 1_600, character: 'A', code: '.-' },
+        ],
+      },
+      tentativeText: 'B',
       timeline: [],
       evaluation: {
         mode: 'scripted',
@@ -103,11 +125,33 @@ describe('complete EMG diagnostic exports', () => {
     });
 
     expect(payload.sourcePage).toBe('continuous-neuromuscular-decoder');
+    expect(payload.version).toBe('2.1');
+    expect(payload.session.sessionId).toBe('continuous-session-1');
+    expect(payload.session.wallClock).toEqual({
+      startedAt: '2026-08-10T09:00:00.000Z',
+      endedAt: '2026-08-10T09:01:00.000Z',
+    });
+    expect(payload.timing.clockDomain).toBe('monotonic-session-ms');
+    expect(payload.timing.sampleRange).toEqual({ firstMs: 1, lastMs: 2, elapsedMs: 1 });
+    expect(payload.timing.rhythmCalibration?.betweenCharacterGapsMs).toEqual([1_200, 1_250]);
+    expect(payload.adaptiveDecoding.candidateScores[0].score).toBe(-2);
+    expect(payload.adaptiveDecoding.boundaryDecisions[0].kind).toBe('candidate-boundary');
+    expect(payload.adaptiveDecoding.pulseAlternatives[0].alternatives).toHaveLength(2);
+    expect(payload.adaptiveDecoding.tentativeOutput).toBe('B');
+    expect(payload.adaptiveDecoding.finalStableOutput).toBe('A');
     expect(payload.session.evaluationProtocol).toEqual({ mode: 'scripted', targetText: 'A' });
     expect(payload.sampleCapture.captureTruncated).toBe(true);
     expect(payload.sampleCapture.columns.ch3).toEqual([30, 31]);
     expect(payload.evaluation?.targetText).toBe('A');
     expect(payload.evaluation?.metrics.characterAccuracy).toBe(1);
     expect(payload.evaluation?.includeInAccuracy).toBe(true);
+  });
+
+  it('creates distinct portable session ids for repeated attempts', () => {
+    const first = createContinuousSessionId();
+    const second = createContinuousSessionId();
+    expect(first).toMatch(/^continuous-/);
+    expect(second).toMatch(/^continuous-/);
+    expect(first).not.toBe(second);
   });
 });

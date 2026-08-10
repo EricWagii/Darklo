@@ -15,6 +15,7 @@ interface ContinuousWaveformView {
 
 interface ContinuousCodeStreamPanelProps {
   decodedText: string;
+  tentativeText: string;
   pendingSymbols: string;
   events: readonly StreamEvent[];
   status: StreamState['status'];
@@ -43,6 +44,7 @@ const eventSymbol = (event: StreamEvent) => {
 
 export function ContinuousCodeStreamPanel({
   decodedText,
+  tentativeText,
   pendingSymbols,
   events,
   status,
@@ -76,7 +78,7 @@ export function ContinuousCodeStreamPanel({
   useEffect(() => {
     const element = decodedOutputRef.current;
     if (element) element.scrollLeft = element.scrollWidth;
-  }, [decodedText]);
+  }, [decodedText, tentativeText]);
 
   return (
     <div
@@ -98,8 +100,20 @@ export function ContinuousCodeStreamPanel({
             className="min-w-0 overflow-x-auto whitespace-nowrap"
             data-role="decoded-output-strip"
           >
-            <div className="flex w-max min-w-0 items-center text-2xl font-normal uppercase text-lime-300 md:text-3xl" style={fontStyle}>
-              <span>{decodedText.toUpperCase() || standbyLabel}</span>
+            <div className="flex w-max min-w-0 items-center text-2xl font-normal uppercase md:text-3xl" style={fontStyle}>
+              {decodedText && (
+                <span className="text-slate-100" data-role="confirmed-output">
+                  {decodedText.toUpperCase()}
+                </span>
+              )}
+              {tentativeText && (
+                <span className="text-lime-300" data-role="tentative-output">
+                  {tentativeText.toUpperCase()}
+                </span>
+              )}
+              {!decodedText && !tentativeText && (
+                <span className="text-lime-300" data-role="standby-output">{standbyLabel}</span>
+              )}
               <span
                 className="ml-1 inline-block h-8 w-[2px] shrink-0 bg-lime-300 shadow-[0_0_9px_rgba(132,255,80,.9)] md:h-9"
                 style={{ animation: 'terminal-caret 1.05s steps(1, end) infinite' }}

@@ -32,6 +32,7 @@ import {
   type ContinuousBaselineStats,
   type ContinuousCalibration,
   type DetectorSnapshot,
+  type PulseDetectorEvent,
 } from '@/lib/continuous-emg-detector';
 import { MORSE_ENTRIES } from '@/lib/morse-code';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
@@ -39,6 +40,7 @@ import {
   appendContinuousSample,
   buildContinuousDiagnosticPackage,
   createContinuousSampleCapture,
+  createContinuousSessionId,
   downloadDiagnosticJson,
 } from '@/lib/emg-diagnostic-export';
 import {
@@ -51,9 +53,14 @@ import {
   type ContinuousSessionEvaluation,
   type EventCorrectionLabel,
 } from '@/lib/continuous-session-evaluation';
-import type { StreamEvent } from '@/lib/continuous-stream-segmenter';
+import { getTentativeText, type StreamEvent } from '@/lib/continuous-stream-segmenter';
 import { evaluateBaselineCapture } from '@/lib/baseline-capture-window';
 import { createMonotonicSessionClock } from '@/lib/monotonic-session-clock';
+import { buildPauseTimingModel } from '@/lib/continuous-pause-calibration';
+import {
+  evaluateRhythmCalibrationAttempt,
+  RHYTHM_CALIBRATION_PATTERN,
+} from '@/lib/continuous-rhythm-calibration';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 type SessionPhase =
@@ -61,6 +68,7 @@ type SessionPhase =
   | 'baseline'
   | 'shortCalibration'
   | 'longCalibration'
+  | 'rhythmCalibration'
   | 'ready'
   | 'decoding'
   | 'paused';
@@ -75,6 +83,7 @@ interface TimelineEntry {
 const BASELINE_DURATION_MS = 3_000;
 const BASELINE_MINIMUM_SAMPLES = 250;
 const CALIBRATION_TARGET = 3;
+const RHYTHM_CALIBRATION_TARGET = 3;
 const DISPLAY_SAMPLE_COUNT = 750;
 const CONTINUOUS_CAPTURE_MAX_SAMPLES = HARDWARE_CONFIG.SAMPLE_RATE * 60 * 30;
 
@@ -92,6 +101,7 @@ const phaseNames: Record<SessionPhase, string> = {
   baseline: '采集静息基线',
   shortCalibration: '校准短时事件',
   longCalibration: '校准长时事件',
+  rhythmCalibration: '校准输入节奏',
   ready: '校准完成',
   decoding: '持续解码中',
   paused: '已暂停',
@@ -119,6 +129,13 @@ export default function ContinuousCodeMode() {
   const longDurationsRef = useRef<number[]>([]);
   const [shortDurations, setShortDurations] = useState<number[]>([]);
   const [longDurations, setLongDurations] = useState<number[]>([]);
+  const rhythmPulsesRef = useRef<PulseDetectorEvent[]>([]);
+  const rhythmWithinGapsRef = useRef<number[]>([]);
+  const rhythmBetweenGapsRef = useRef<number[]>([]);
+  const rhythmAcceptedRef = useRef(0);
+  const [rhythmPulseCount, setRhythmPulseCount] = useState(0);
+  const [rhythmAcceptedCount, setRhythmAcceptedCount] = useState(0);
+  const [rhythmCalibrationWarning, setRhythmCalibrationWarning] = useState<string | null>(null);
   const [calibration, setCalibration] = useState<ContinuousCalibration | null>(null);
   const calibrationRef = useRef<ContinuousCalibration | null>(null);
   const detectorRef = useRef<ContinuousEmgDetector | null>(null);
@@ -134,6 +151,9 @@ export default function ContinuousCodeMode() {
   const envelopeBufferRef = useRef<number[]>([]);
   const frameCountRef = useRef(0);
   const sessionClockRef = useRef(createMonotonicSessionClock());
+  const sessionIdRef = useRef(createContinuousSessionId());
+  const sessionStartedAtRef = useRef(new Date().toISOString());
+  const sessionEndedAtRef = useRef<string | null>(null);
   const continuousCaptureRef = useRef(createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES));
   const [captureSampleCount, setCaptureSampleCount] = useState(0);
   const [evaluationMode, setEvaluationMode] = useState<ContinuousEvaluationMode>('scripted');
@@ -162,6 +182,8 @@ export default function ContinuousCodeMode() {
       characterBoundaryMs: pace.characterBoundaryMs,
       forceSplitMs: pace.forceSplitMs,
       boundaryUncertaintyMs: Math.min(160, Math.max(70, pace.characterBoundaryMs * 0.15)),
+      pauseTimingModel: calibration.pauseTimingModel,
+      candidateCommitScoreWindow: 1.5,
       maxCandidates: 16,
       maxPendingSymbols: 24,
     };
@@ -188,14 +210,24 @@ export default function ContinuousCodeMode() {
 
   const startBaseline = useCallback(() => {
     sessionClockRef.current.reset();
+    sessionIdRef.current = createContinuousSessionId();
+    sessionStartedAtRef.current = new Date().toISOString();
+    sessionEndedAtRef.current = null;
     continuousCaptureRef.current = createContinuousSampleCapture(CONTINUOUS_CAPTURE_MAX_SAMPLES);
     setCaptureSampleCount(0);
     baselineSamplesRef.current = [];
     baselineStatsRef.current = null;
     shortDurationsRef.current = [];
     longDurationsRef.current = [];
+    rhythmPulsesRef.current = [];
+    rhythmWithinGapsRef.current = [];
+    rhythmBetweenGapsRef.current = [];
+    rhythmAcceptedRef.current = 0;
     setShortDurations([]);
     setLongDurations([]);
+    setRhythmPulseCount(0);
+    setRhythmAcceptedCount(0);
+    setRhythmCalibrationWarning(null);
     setCalibration(null);
     calibrationRef.current = null;
     detectorRef.current = null;
@@ -235,8 +267,19 @@ export default function ContinuousCodeMode() {
     setCalibration(result.calibration);
     detectorRef.current = new ContinuousEmgDetector(result.calibration.detectorConfig);
     setDecoder(resetDecoder());
-    setPhase('ready');
-    addTimeline({ at: sessionClockRef.current.now(), kind: 'system', message: '校准完成，可以开始连续输入' });
+    rhythmPulsesRef.current = [];
+    rhythmWithinGapsRef.current = [];
+    rhythmBetweenGapsRef.current = [];
+    rhythmAcceptedRef.current = 0;
+    setRhythmPulseCount(0);
+    setRhythmAcceptedCount(0);
+    setRhythmCalibrationWarning(null);
+    setPhase('rhythmCalibration');
+    addTimeline({
+      at: sessionClockRef.current.now(),
+      kind: 'system',
+      message: `请按自然节奏完成 ${RHYTHM_CALIBRATION_TARGET} 轮 SOS（... --- ...）节奏练习`,
+    });
   }, [addTimeline, setPhase]);
 
   const startDecoding = useCallback(() => {
@@ -255,7 +298,7 @@ export default function ContinuousCodeMode() {
   }, [addTimeline, evaluationMode, setPhase, targetText]);
 
   useEffect(() => {
-    const busy = phase === 'baseline' || phase === 'shortCalibration' || phase === 'longCalibration' || phase === 'decoding';
+    const busy = phase === 'baseline' || phase === 'shortCalibration' || phase === 'longCalibration' || phase === 'rhythmCalibration' || phase === 'decoding';
     setEmgRuntimeBusy('ContinuousCodeMode', busy);
     return () => setEmgRuntimeBusy('ContinuousCodeMode', false);
   }, [phase]);
@@ -339,7 +382,7 @@ export default function ContinuousCodeMode() {
     let snapshot = detector?.getSnapshot() ?? emptySnapshot;
     if (
       detector &&
-      (currentPhase === 'shortCalibration' || currentPhase === 'longCalibration' || currentPhase === 'decoding')
+      (currentPhase === 'shortCalibration' || currentPhase === 'longCalibration' || currentPhase === 'rhythmCalibration' || currentPhase === 'decoding')
     ) {
       const events = detector.push(sample, timestamp);
       snapshot = detector.getSnapshot();
@@ -360,6 +403,66 @@ export default function ContinuousCodeMode() {
           longDurationsRef.current = [...longDurationsRef.current, event.durationMs].slice(0, 5);
           setLongDurations(longDurationsRef.current);
           addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '记录长时事件' });
+        } else if (currentPhase === 'rhythmCalibration') {
+          const currentAttempt = [...rhythmPulsesRef.current, event];
+          rhythmPulsesRef.current = currentAttempt;
+          setRhythmPulseCount(currentAttempt.length);
+          addTimeline({
+            at: event.endedAt,
+            kind: 'pulse',
+            durationMs: event.durationMs,
+            message: `节奏练习脉冲 ${currentAttempt.length}/${RHYTHM_CALIBRATION_PATTERN.length}`,
+          });
+
+          if (currentAttempt.length === RHYTHM_CALIBRATION_PATTERN.length) {
+            const activeCalibration = calibrationRef.current;
+            if (!activeCalibration) continue;
+            const attempt = evaluateRhythmCalibrationAttempt(currentAttempt, activeCalibration);
+            rhythmPulsesRef.current = [];
+            setRhythmPulseCount(0);
+            detectorRef.current?.reset();
+
+            if (!attempt.ok) {
+              const warning = '本轮节奏与 SOS 不一致，请稍作停顿后重试';
+              setRhythmCalibrationWarning(warning);
+              addTimeline({ at: event.endedAt, kind: 'blocked', message: warning });
+              continue;
+            }
+
+            rhythmWithinGapsRef.current.push(...attempt.withinCharacterGapsMs);
+            rhythmBetweenGapsRef.current.push(...attempt.betweenCharacterGapsMs);
+            rhythmAcceptedRef.current += 1;
+            setRhythmAcceptedCount(rhythmAcceptedRef.current);
+            setRhythmCalibrationWarning(null);
+            addTimeline({
+              at: event.endedAt,
+              kind: 'system',
+              message: `节奏练习通过 ${rhythmAcceptedRef.current}/${RHYTHM_CALIBRATION_TARGET}`,
+            });
+
+            if (rhythmAcceptedRef.current >= RHYTHM_CALIBRATION_TARGET) {
+              const timing = buildPauseTimingModel({
+                withinCharacterGapsMs: rhythmWithinGapsRef.current,
+                betweenCharacterGapsMs: rhythmBetweenGapsRef.current,
+                fallbackBoundaryMs: PACE_PRESETS.slow.characterBoundaryMs,
+              });
+              const completedCalibration = {
+                ...activeCalibration,
+                pauseTimingModel: timing.model,
+              };
+              calibrationRef.current = completedCalibration;
+              setCalibration(completedCalibration);
+              detectorRef.current = new ContinuousEmgDetector(completedCalibration.detectorConfig);
+              setRhythmCalibrationWarning(timing.warning);
+              setDecoder(resetDecoder());
+              setPhase('ready');
+              addTimeline({
+                at: event.endedAt,
+                kind: timing.warning ? 'blocked' : 'system',
+                message: timing.warning ?? '节奏校准完成，可以开始连续输入',
+              });
+            }
+          }
         } else if (currentPhase === 'decoding') {
           const config = decoderConfigRef.current;
           if (config) {
@@ -418,6 +521,7 @@ export default function ContinuousCodeMode() {
     setPhase('paused');
     setActualText(evaluationMode === 'scripted' ? targetText : finalizedDecoder.committedText);
     setReviewOpen(true);
+    sessionEndedAtRef.current = new Date().toISOString();
     addTimeline({ at: now, kind: 'system', message: '会话结束，等待真实标签复核' });
   };
 
@@ -462,6 +566,9 @@ export default function ContinuousCodeMode() {
   const exportSession = () => {
     if (continuousCaptureRef.current.columns.timestamps.length === 0) return;
     const payload = buildContinuousDiagnosticPackage({
+      sessionId: sessionIdRef.current,
+      sessionStartedAt: sessionStartedAtRef.current,
+      sessionEndedAt: sessionEndedAtRef.current,
       capture: continuousCaptureRef.current,
       sampleRate: HARDWARE_CONFIG.SAMPLE_RATE,
       sourceChannel: 'CH2',
@@ -474,7 +581,16 @@ export default function ContinuousCodeMode() {
       baselineStats: baselineStatsRef.current,
       shortDurationsMs: shortDurationsRef.current,
       longDurationsMs: longDurationsRef.current,
+      rhythmCalibration: {
+        pattern: RHYTHM_CALIBRATION_PATTERN,
+        acceptedAttempts: rhythmAcceptedRef.current,
+        targetAttempts: RHYTHM_CALIBRATION_TARGET,
+        withinCharacterGapsMs: [...rhythmWithinGapsRef.current],
+        betweenCharacterGapsMs: [...rhythmBetweenGapsRef.current],
+        warning: rhythmCalibrationWarning,
+      },
       decoder,
+      tentativeText: getTentativeText(decoder),
       timeline: [...timeline].reverse(),
       evaluation: sessionEvaluation,
     });
@@ -482,11 +598,13 @@ export default function ContinuousCodeMode() {
   };
 
   const targetTextRequired = evaluationMode === 'scripted' && !targetText;
+  const tentativeText = getTentativeText(decoder);
   const streamStandbyLabel = ({
     idle: 'CALIBRATE',
     baseline: 'BASELINE',
     shortCalibration: 'SHORT CAL',
     longCalibration: 'LONG CAL',
+    rhythmCalibration: 'RHYTHM CAL',
     ready: 'READY',
     decoding: '',
     paused: 'PAUSED',
@@ -501,6 +619,8 @@ export default function ContinuousCodeMode() {
           ? `请完成至少 ${CALIBRATION_TARGET} 次短时肌电事件，当前 ${shortDurations.length} 次。`
           : phase === 'longCalibration'
             ? `请完成至少 ${CALIBRATION_TARGET} 次长时肌电事件，当前 ${longDurations.length} 次。`
+          : phase === 'rhythmCalibration'
+            ? `请按自然节奏输入 SOS（... --- ...），已通过 ${rhythmAcceptedCount}/${RHYTHM_CALIBRATION_TARGET} 轮；本轮 ${rhythmPulseCount}/${RHYTHM_CALIBRATION_PATTERN.length} 个事件。`
             : phase === 'ready' && targetTextRequired
               ? '请先输入目标文本。'
               : phase === 'ready'
@@ -572,7 +692,7 @@ export default function ContinuousCodeMode() {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <div className="label mb-2">会话校准</div>
-                <div className="text-secondary">静息 3 秒，随后各完成至少 3 次短时和长时肌电事件。</div>
+                <div className="text-secondary">静息 3 秒，完成短时和长时事件校准后，再进行 3 轮 SOS 节奏练习。</div>
               </div>
               <div className="flex flex-wrap gap-3">
                 <Button variant="primary" disabled={!serial.isConnected || phase === 'baseline'} onClick={startBaseline}>
@@ -588,8 +708,23 @@ export default function ContinuousCodeMode() {
                     完成长时事件校准 ({longDurations.length})
                   </Button>
                 )}
+                {phase === 'rhythmCalibration' && (
+                  <Button disabled>
+                    节奏练习 {rhythmAcceptedCount}/{RHYTHM_CALIBRATION_TARGET} · 本轮 {rhythmPulseCount}/{RHYTHM_CALIBRATION_PATTERN.length}
+                  </Button>
+                )}
               </div>
             </div>
+            {phase === 'rhythmCalibration' && (
+              <div className="mt-5 border p-4" style={{ borderColor: 'var(--color-border)' }}>
+                <div className="label mb-2">节奏练习</div>
+                <div className="font-mono text-2xl text-accent" style={{ letterSpacing: 0 }}>... --- ...</div>
+                <div className="mt-2 text-sm text-secondary">保持自然输入速度；系统学习您的字符内停顿和字符间停顿，不要求刻意压缩长咬后的释放时间。</div>
+              </div>
+            )}
+            {rhythmCalibrationWarning && (
+              <div className="mt-4 text-sm text-amber-300" role="alert">{rhythmCalibrationWarning}</div>
+            )}
             {calibration && (
               <div className="grid grid-cols-3 gap-4 mt-6 max-md:grid-cols-1">
                 <div><span className="text-secondary">短时事件中位数</span><div>{Math.round(calibration.shortMedianMs)} ms</div></div>
@@ -634,6 +769,7 @@ export default function ContinuousCodeMode() {
                   {phase === 'baseline' && <Button disabled>正在采集静息基线</Button>}
                   {phase === 'shortCalibration' && <Button disabled>短时事件校准中</Button>}
                   {phase === 'longCalibration' && <Button disabled>长时事件校准中</Button>}
+                  {phase === 'rhythmCalibration' && <Button disabled>节奏练习中</Button>}
                   {phase === 'ready' && (
                     <Button variant="success" disabled={targetTextRequired} onClick={startDecoding}>
                       <Play size={16} className="inline mr-2" />开始解码
@@ -658,6 +794,7 @@ export default function ContinuousCodeMode() {
             </div>
             <ContinuousCodeStreamPanel
               decodedText={decoder.committedText}
+              tentativeText={tentativeText}
               pendingSymbols={decoder.pendingSymbols}
               events={decoder.events}
               status={decoder.status}
@@ -669,7 +806,7 @@ export default function ContinuousCodeMode() {
                 endThreshold: detectorSnapshot.endThreshold,
                 isActive: detectorSnapshot.isActive,
               }}
-              onForceSplit={() => decoderConfig && setDecoder((current) => forceSplitDecoder(current, Date.now(), decoderConfig))}
+              onForceSplit={() => decoderConfig && setDecoder((current) => forceSplitDecoder(current, sessionClockRef.current.now(), decoderConfig))}
               onUndo={() => setDecoder(undoDecoder)}
               onClear={() => {
                 setDecoder(resetDecoder());

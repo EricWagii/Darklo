@@ -33,6 +33,7 @@ export interface StreamEvent {
   symbol?: MorseSymbol;
   code?: string;
   character?: string;
+  alternatives?: readonly SymbolAlternative[];
   reason?: 'invalid-tail' | 'ambiguous-tail' | 'candidate-overflow' | 'uncertain-pulse';
 }
 

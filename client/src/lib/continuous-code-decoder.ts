@@ -72,11 +72,12 @@ export const appendPulse = (
     const lowerBoundary = config.durationBoundaryMs - config.uncertaintyMarginMs;
     const upperBoundary = config.durationBoundaryMs + config.uncertaintyMarginMs;
     const position = Math.min(1, Math.max(0, (pulse.durationMs - lowerBoundary) / Math.max(1, upperBoundary - lowerBoundary)));
+    const alternatives = [
+      { symbol: '.' as const, scoreAdjustment: -position * 2 },
+      { symbol: '-' as const, scoreAdjustment: -(1 - position) * 2 },
+    ];
     const stream = appendStreamAlternatives(state, {
-      alternatives: [
-        { symbol: '.', scoreAdjustment: -position * 2 },
-        { symbol: '-', scoreAdjustment: -(1 - position) * 2 },
-      ],
+      alternatives,
       startedAt: pulse.startedAt,
       endedAt: pulse.endedAt,
     }, config);
@@ -93,6 +94,7 @@ export const appendPulse = (
           kind: 'uncertain',
           at: pulse.endedAt,
           reason: 'uncertain-pulse',
+          alternatives,
         },
       ],
     };
