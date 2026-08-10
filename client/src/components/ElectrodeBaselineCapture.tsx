@@ -7,7 +7,7 @@
  * - 保存到 IndexedDB（全局）
  */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { useSerialConnectionContext } from '@/contexts/SerialConnectionContext';
 import { computeFFT } from '@/lib/fft-analysis';
 import { EnhancedWaveformVisualization } from './EnhancedWaveformVisualization';
@@ -15,6 +15,22 @@ import { emgDatabase } from '@/lib/db';
 import { toast } from 'sonner';
 import { calculateRestingStats } from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
+import {
+  evaluateBaselineCapture,
+  type BaselineCaptureSnapshot,
+} from '@/lib/baseline-capture-window';
+import { HARDWARE_CONFIG } from '@shared/hardware-config';
+
+const CAPTURE_DURATION_MS = 5_000;
+const MINIMUM_BASELINE_SAMPLES = 100;
+
+const emptyCaptureSnapshot: BaselineCaptureSnapshot = {
+  elapsedMs: 0,
+  progress: 0,
+  sampleCount: 0,
+  measuredSampleRate: 0,
+  status: 'collecting',
+};
 
 interface ElectrodeBaselineCaptureProps {
   onComplete?: () => void;
@@ -24,7 +40,7 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
   const { isConnected, onDataReceived } = useSerialConnectionContext();
 
   const [isCapturing, setIsCapturing] = useState(false);
-  const [captureTime, setCaptureTime] = useState(0);
+  const [captureSnapshot, setCaptureSnapshot] = useState(emptyCaptureSnapshot);
   const [waveform, setWaveform] = useState<{ ch1: number[]; ch2: number[]; ch3: number[] }>({
     ch1: [],
     ch2: [],
@@ -39,7 +55,9 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
 
   // ✅ 修改18：使用isCapturingRef代替闭包里的isCapturing
   const isCapturingRef = useRef(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const captureStartedAtRef = useRef(0);
+  const captureFinishedRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
   const unsubscribeRef = useRef<null | (() => void)>(null);
 
   useEffect(() => {
@@ -56,16 +74,98 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
     };
   }, []);
 
+  const handleStopCapture = useCallback(() => {
+    if (captureFinishedRef.current) return;
+    captureFinishedRef.current = true;
+
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    setIsCapturing(false);
+    isCapturingRef.current = false;
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+
+    const samplesCollected = waveformBufferRef.current.ch1.length;
+    const elapsedMs = Math.max(1, Date.now() - captureStartedAtRef.current);
+    const measuredSampleRate = samplesCollected / (elapsedMs / 1_000);
+    setCaptureSnapshot((current) => ({
+      ...current,
+      elapsedMs,
+      progress: Math.min(100, (elapsedMs / CAPTURE_DURATION_MS) * 100),
+      sampleCount: samplesCollected,
+      measuredSampleRate,
+      status: samplesCollected === 0
+        ? 'no-data'
+        : samplesCollected < MINIMUM_BASELINE_SAMPLES
+          ? 'insufficient'
+          : 'complete',
+    }));
+
+    if (samplesCollected < MINIMUM_BASELINE_SAMPLES) {
+      if (samplesCollected === 0) {
+        toast.error('未收到任何有效串口帧。请确认设备持续发送数据后重试。');
+      } else {
+        toast.error(
+          `静息基线仅收到 ${samplesCollected} 个样本（约 ${Math.round(measuredSampleRate)} Hz），至少需要 ${MINIMUM_BASELINE_SAMPLES} 个。`
+        );
+      }
+      return;
+    }
+
+    // 计算基准特征
+    let spectrum = { dominantFrequency: 0, snr: 0 };
+    try {
+      spectrum = computeFFT(waveformBufferRef.current.ch2, HARDWARE_CONFIG.SAMPLE_RATE);
+    } catch (err) {
+      console.error('频谱计算失败:', err);
+    }
+
+    const restingBaseline = {
+      ch1: [...waveformBufferRef.current.ch1],
+      ch2: [...waveformBufferRef.current.ch2],
+      ch3: [...waveformBufferRef.current.ch3],
+    };
+    const restingStats = calculateRestingStats(restingBaseline);
+    const baseline = {
+      ch1Mean: restingStats.ch1Mean,
+      ch1Std: restingStats.ch1Std,
+      ch2Mean: restingStats.ch2Mean,
+      ch2Std: restingStats.ch2Std,
+      ch3Mean: restingStats.ch3Mean,
+      ch3Std: restingStats.ch3Std,
+      dominantFrequency: spectrum.dominantFrequency,
+      snr: spectrum.snr,
+      capturedAt: restingStats.capturedAt,
+      samplesCollected: restingStats.samplesCollected,
+      restingBaseline,
+    };
+
+    emgDatabase.saveCalibration(baseline)
+      .then(() => {
+        toast.success(`全局电极基准采集成功：${samplesCollected} 个样本`);
+        onComplete?.();
+      })
+      .catch((err) => {
+        console.error('保存基准失败:', err);
+        toast.error('保存基准失败');
+      });
+  }, [onComplete]);
+
   // 开始采集基准
-  const handleStartCapture = () => {
+  const handleStartCapture = useCallback(() => {
     if (!isConnected) {
       alert('请先连接 STM32 设备');
       return;
     }
 
+    captureFinishedRef.current = false;
+    captureStartedAtRef.current = Date.now();
     setIsCapturing(true);
     isCapturingRef.current = true;
-    setCaptureTime(0);
+    setCaptureSnapshot(emptyCaptureSnapshot);
     waveformBufferRef.current = { ch1: [], ch2: [], ch3: [] };
     setWaveform({ ch1: [], ch2: [], ch3: [] });
     unsubscribeRef.current?.();
@@ -87,76 +187,19 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
       }
     });
 
-    // 计时器
-    timerRef.current = setInterval(() => {
-      setCaptureTime((t) => {
-        if (t >= 4) {
-          // 5 秒后自动停止
-          handleStopCapture();
-          return t;
-        }
-        return t + 1;
+    // 进度按真实经过时间计算；串口帧数只用于验收和诊断。
+    timerRef.current = window.setInterval(() => {
+      const snapshot = evaluateBaselineCapture({
+        startedAt: captureStartedAtRef.current,
+        now: Date.now(),
+        durationMs: CAPTURE_DURATION_MS,
+        sampleCount: waveformBufferRef.current.ch1.length,
+        minimumSamples: MINIMUM_BASELINE_SAMPLES,
       });
-    }, 1000);
-  };
-
-  // 停止采集基准
-  const handleStopCapture = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
-
-    setIsCapturing(false);
-    isCapturingRef.current = false;
-    unsubscribeRef.current?.();
-    unsubscribeRef.current = null;
-
-    // 计算基准特征
-    if (waveformBufferRef.current.ch1.length >= 100) {
-      // 计算频谱
-      let spectrum = { dominantFrequency: 0, snr: 0 };
-      try {
-        // ✅ 修改18：使用系统采样率500而不是250
-        spectrum = computeFFT(waveformBufferRef.current.ch2, 500);
-      } catch (err) {
-        console.error('频谱计算失败:', err);
-      }
-
-      // 保存全局基准到 IndexedDB
-      const restingBaseline = {
-        ch1: [...waveformBufferRef.current.ch1],
-        ch2: [...waveformBufferRef.current.ch2],
-        ch3: [...waveformBufferRef.current.ch3],
-      };
-      const restingStats = calculateRestingStats(restingBaseline);
-      const baseline = {
-        ch1Mean: restingStats.ch1Mean,
-        ch1Std: restingStats.ch1Std,
-        ch2Mean: restingStats.ch2Mean,
-        ch2Std: restingStats.ch2Std,
-        ch3Mean: restingStats.ch3Mean,
-        ch3Std: restingStats.ch3Std,
-        dominantFrequency: spectrum.dominantFrequency,
-        snr: spectrum.snr,
-        capturedAt: restingStats.capturedAt,
-        samplesCollected: restingStats.samplesCollected,
-        restingBaseline,
-      };
-
-      // ✅ 修改18：保存电极基准到IndexedDB
-      emgDatabase.saveCalibration(baseline)
-        .then(() => {
-          toast.success('✓ 全局电极基准采集成功！');
-          onComplete?.();
-        })
-        .catch((err) => {
-          console.error('保存基准失败:', err);
-          toast.error('✗ 保存基准失败');
-        });
-    } else {
-      alert('采集数据不足，请重试');
-    }
-  };
+      setCaptureSnapshot(snapshot);
+      if (snapshot.status !== 'collecting') handleStopCapture();
+    }, 100);
+  }, [handleStopCapture, isConnected, onDataReceived]);
 
   return (
     <div
@@ -223,7 +266,9 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
             <span style={{ color: '#888', fontSize: '12px' }}>采集进度</span>
             <span style={{ color: '#4ade80', fontWeight: 'bold' }}>
-              {captureTime} / 5 秒
+              {(captureSnapshot.elapsedMs / 1_000).toFixed(1)} / 5.0 秒
+              {' · '}{captureSnapshot.sampleCount} 样本
+              {' · '}{Math.round(captureSnapshot.measuredSampleRate)} Hz
             </span>
           </div>
           <div
@@ -238,7 +283,7 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
               style={{
                 backgroundColor: '#4ade80',
                 height: '100%',
-                width: `${(captureTime / 5) * 100}%`,
+                width: `${captureSnapshot.progress}%`,
                 transition: 'width 0.3s ease',
               }}
             />

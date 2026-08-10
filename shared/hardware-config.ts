@@ -10,8 +10,11 @@ export const HARDWARE_CONFIG = {
   // 对应固定长度 512 样本 = 1.024 秒
   SAMPLE_RATE: 500,
 
-  // 波特率：230400 (改为 230400，提高稳定性)
-  BAUD_RATE: 230400,
+  // STM32 实测串口协议波特率
+  BAUD_RATE: 115200,
+
+  // 前端增益（电极板规格）
+  GAIN: 723,
 
   // 通道数
   NUM_CHANNELS: 3,

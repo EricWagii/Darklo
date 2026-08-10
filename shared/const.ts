@@ -15,19 +15,8 @@ export const NOT_ADMIN_ERR_MSG = 'You do not have required permission (10002)';
  */
 
 // ============ 硬件配置 ============
-export const HARDWARE_CONFIG = {
-  // 前端增益（电极板规格）
-  GAIN: 723,
-  
-  // 电极数量
-  NUM_CHANNELS: 3,
-  
-  // 推荐采样率（Hz）
-  SAMPLE_RATE: 500,
-  
-  // 串口波特率
-  BAUD_RATE: 115200,
-};
+// 保留旧导入路径，但只维护一份硬件协议配置。
+export { HARDWARE_CONFIG } from './hardware-config';
 
 // ============ 采集参数 ============
 export const COLLECTION_CONFIG = {

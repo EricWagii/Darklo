@@ -8,6 +8,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 export interface HardwareStatus {
   isConnected: boolean;
@@ -47,7 +48,7 @@ export function useHardwareConnection() {
       const port = await (navigator as any).serial.requestPort();
       
       // 打开端口
-      await port.open({ baudRate: 115200 });
+      await port.open({ baudRate: HARDWARE_CONFIG.BAUD_RATE });
 
       portRef.current = port;
 

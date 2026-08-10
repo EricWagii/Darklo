@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { addDebugLog } from '@/components/DebugPanel';
+import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 interface SerialPort {
   open(options: { baudRate: number }): Promise<void>;
@@ -57,7 +58,10 @@ export function useSerialConnection() {
   }, [isSupported]);
 
   // 连接端口
-  const connect = useCallback(async (targetPort?: SerialPort, baudRate: number = 115200) => {
+  const connect = useCallback(async (
+    targetPort?: SerialPort,
+    baudRate: number = HARDWARE_CONFIG.BAUD_RATE
+  ) => {
     try {
       if (!targetPort && !state.port) {
         throw new Error('未指定端口');

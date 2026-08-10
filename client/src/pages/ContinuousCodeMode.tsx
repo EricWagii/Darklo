@@ -52,6 +52,7 @@ import {
   type EventCorrectionLabel,
 } from '@/lib/continuous-session-evaluation';
 import type { StreamEvent } from '@/lib/continuous-stream-segmenter';
+import { evaluateBaselineCapture } from '@/lib/baseline-capture-window';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
 type SessionPhase =
@@ -70,7 +71,8 @@ interface TimelineEntry {
   durationMs?: number;
 }
 
-const BASELINE_SAMPLE_COUNT = HARDWARE_CONFIG.SAMPLE_RATE * 3;
+const BASELINE_DURATION_MS = 3_000;
+const BASELINE_MINIMUM_SAMPLES = 250;
 const CALIBRATION_TARGET = 3;
 const DISPLAY_SAMPLE_COUNT = 750;
 const CONTINUOUS_CAPTURE_MAX_SAMPLES = HARDWARE_CONFIG.SAMPLE_RATE * 60 * 30;
@@ -106,7 +108,11 @@ export default function ContinuousCodeMode() {
   const [phase, setPhaseState] = useState<SessionPhase>('idle');
   const phaseRef = useRef<SessionPhase>('idle');
   const [baselineProgress, setBaselineProgress] = useState(0);
+  const [baselineSampleCount, setBaselineSampleCount] = useState(0);
+  const [baselineSampleRate, setBaselineSampleRate] = useState(0);
+  const [baselineFailure, setBaselineFailure] = useState<string | null>(null);
   const baselineSamplesRef = useRef<number[]>([]);
+  const baselineStartedAtRef = useRef(0);
   const baselineStatsRef = useRef<ContinuousBaselineStats | null>(null);
   const shortDurationsRef = useRef<number[]>([]);
   const longDurationsRef = useRef<number[]>([]);
@@ -198,7 +204,11 @@ export default function ContinuousCodeMode() {
     setSessionEvaluation(null);
     setEventCorrections([]);
     setBaselineProgress(0);
+    setBaselineSampleCount(0);
+    setBaselineSampleRate(0);
+    setBaselineFailure(null);
     setDetectorSnapshot(emptySnapshot);
+    baselineStartedAtRef.current = Date.now();
     setPhase('baseline');
     addTimeline({ at: Date.now(), kind: 'system', message: '开始采集 3 秒静息基线' });
   }, [addTimeline, setPhase]);
@@ -259,6 +269,49 @@ export default function ContinuousCodeMode() {
   }, [decoderConfig, phase]);
 
   useEffect(() => {
+    if (phase !== 'baseline') return;
+
+    const updateBaselineWindow = () => {
+      if (phaseRef.current !== 'baseline') return;
+      const snapshot = evaluateBaselineCapture({
+        startedAt: baselineStartedAtRef.current,
+        now: Date.now(),
+        durationMs: BASELINE_DURATION_MS,
+        sampleCount: baselineSamplesRef.current.length,
+        minimumSamples: BASELINE_MINIMUM_SAMPLES,
+      });
+      setBaselineProgress(snapshot.progress);
+      setBaselineSampleCount(snapshot.sampleCount);
+      setBaselineSampleRate(snapshot.measuredSampleRate);
+
+      if (snapshot.status === 'collecting') return;
+      if (snapshot.status === 'complete') {
+        const baseline = estimateContinuousBaseline(baselineSamplesRef.current);
+        baselineStatsRef.current = baseline;
+        createCalibrationDetector(baseline);
+        setPhase('shortCalibration');
+        addTimeline({
+          at: Date.now(),
+          kind: 'system',
+          message: `静息基线完成：${snapshot.sampleCount} 个样本，约 ${Math.round(snapshot.measuredSampleRate)} Hz。请进行至少 3 次短时肌电事件`,
+        });
+        return;
+      }
+
+      const message = snapshot.status === 'no-data'
+        ? '静息采集未收到任何有效串口帧。请确认串口数据仍在持续发送后重试。'
+        : `静息采集仅收到 ${snapshot.sampleCount} 个样本（约 ${Math.round(snapshot.measuredSampleRate)} Hz），至少需要 ${BASELINE_MINIMUM_SAMPLES} 个。`;
+      setBaselineFailure(message);
+      setPhase('idle');
+      addTimeline({ at: Date.now(), kind: 'blocked', message });
+    };
+
+    updateBaselineWindow();
+    const timer = window.setInterval(updateBaselineWindow, 100);
+    return () => window.clearInterval(timer);
+  }, [addTimeline, createCalibrationDetector, phase, setPhase]);
+
+  useEffect(() => {
     if (!serial.isConnected && phaseRef.current !== 'idle') {
       detectorRef.current?.reset();
       detectorRef.current = null;
@@ -280,16 +333,6 @@ export default function ContinuousCodeMode() {
 
     if (currentPhase === 'baseline') {
       baselineSamplesRef.current.push(sample);
-      const count = baselineSamplesRef.current.length;
-      if (count % 25 === 0) setBaselineProgress(Math.min(100, count / BASELINE_SAMPLE_COUNT * 100));
-      if (count >= BASELINE_SAMPLE_COUNT) {
-        const baseline = estimateContinuousBaseline(baselineSamplesRef.current);
-        baselineStatsRef.current = baseline;
-        createCalibrationDetector(baseline);
-        setBaselineProgress(100);
-        setPhase('shortCalibration');
-        addTimeline({ at: timestamp, kind: 'system', message: '静息基线完成，请进行至少 3 次短时肌电事件' });
-      }
     }
 
     const detector = detectorRef.current;
@@ -451,9 +494,9 @@ export default function ContinuousCodeMode() {
   const sessionActionHint = !serial.isConnected
     ? '请先连接硬件，再完成个体化校准。'
     : phase === 'idle'
-      ? '首次使用需先完成静息、短时和长时事件校准。'
+      ? baselineFailure ?? '首次使用需先完成静息、短时和长时事件校准。'
       : phase === 'baseline'
-        ? `请保持放松，正在采集 3 秒静息基线（${Math.round(baselineProgress)}%）。`
+        ? `请保持放松，正在采集 3 秒静息基线（${Math.round(baselineProgress)}%，${baselineSampleCount} 个样本，约 ${Math.round(baselineSampleRate)} Hz）。`
         : phase === 'shortCalibration'
           ? `请完成至少 ${CALIBRATION_TARGET} 次短时肌电事件，当前 ${shortDurations.length} 次。`
           : phase === 'longCalibration'
@@ -509,7 +552,14 @@ export default function ContinuousCodeMode() {
             <Card>
               <div className="label mb-3">当前阶段</div>
               <div className="text-xl text-accent">{phaseNames[phase]}</div>
-              {phase === 'baseline' && <div className="mt-3 text-secondary">{Math.round(baselineProgress)}%</div>}
+              {phase === 'baseline' && (
+                <div className="mt-3 text-secondary">
+                  {Math.round(baselineProgress)}% · {baselineSampleCount} 样本 · {Math.round(baselineSampleRate)} Hz
+                </div>
+              )}
+              {phase === 'idle' && baselineFailure && (
+                <div className="mt-3 text-error text-sm" role="alert">{baselineFailure}</div>
+              )}
             </Card>
             <Card>
               <div className="label mb-3">动作阈值</div>
