@@ -1,5 +1,9 @@
 import { decodeMorse, isMorsePrefix } from './morse-code';
-import { scorePauseGap, type PauseTimingModel } from './continuous-pause-calibration';
+import {
+  earliestPauseBoundaryMs,
+  scorePauseGap,
+  type PauseTimingModel,
+} from './continuous-pause-calibration';
 
 export type MorseSymbol = '.' | '-';
 export type StreamEventKind =
@@ -233,10 +237,13 @@ export const appendStreamAlternatives = (
       const pauseScores = pauseModel
         ? scorePauseGap(pauseModel, effectiveGap, lastMorseSymbol(candidate.pendingSymbols))
         : null;
+      const earliestBoundary = pauseModel
+        ? earliestPauseBoundaryMs(pauseModel, lastMorseSymbol(candidate.pendingSymbols))
+        : lower;
       const allowContinuation = pauseScores !== null
         ? effectiveGap < (pauseCeiling ?? Number.POSITIVE_INFINITY)
         : effectiveGap <= upper;
-      const allowBoundary = pauseScores !== null || effectiveGap >= lower;
+      const allowBoundary = effectiveGap >= earliestBoundary;
       const continuationAdjustment = pauseScores?.continuationScore
         ?? -Math.max(0, effectiveGap - lower) / Math.max(1, config.boundaryUncertaintyMs);
       const boundaryAdjustment = pauseScores?.boundaryScore
@@ -334,7 +341,9 @@ export const advanceStream = (
   if (idleMs >= config.forceSplitMs) return forceSplit(state, now, config);
   const pauseModel = usablePauseModel(config);
   if (pauseModel) {
-    const pauseScore = scorePauseGap(pauseModel, idleMs, lastMorseSymbol(state.pendingSymbols));
+    const precedingSymbol = lastMorseSymbol(state.pendingSymbols);
+    if (idleMs < earliestPauseBoundaryMs(pauseModel, precedingSymbol)) return state;
+    const pauseScore = scorePauseGap(pauseModel, idleMs, precedingSymbol);
     if (
       idleMs < adaptiveBoundaryCeiling(config, pauseModel)
       && pauseScore.boundaryScore <= pauseScore.continuationScore + 0.35

@@ -25,6 +25,15 @@ export interface PauseGapScore {
   confidence: number;
 }
 
+const selectWithinDistribution = (
+  model: PauseTimingModel,
+  precedingSymbol?: '.' | '-'
+): RobustPauseDistribution => precedingSymbol === '.'
+  ? model.withinCharacterAfterDot ?? model.withinCharacter
+  : precedingSymbol === '-'
+    ? model.withinCharacterAfterDash ?? model.withinCharacter
+    : model.withinCharacter;
+
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.min(maximum, Math.max(minimum, value));
 
@@ -128,11 +137,7 @@ export const scorePauseGap = (
   gapMs: number,
   precedingSymbol?: '.' | '-'
 ): PauseGapScore => {
-  const withinCharacter = precedingSymbol === '.'
-    ? model.withinCharacterAfterDot ?? model.withinCharacter
-    : precedingSymbol === '-'
-      ? model.withinCharacterAfterDash ?? model.withinCharacter
-      : model.withinCharacter;
+  const withinCharacter = selectWithinDistribution(model, precedingSymbol);
   const continuationScore = distributionScore(withinCharacter, gapMs);
   const boundaryScore = distributionScore(model.betweenCharacter, gapMs);
   const distance = Math.abs(boundaryScore - continuationScore);
@@ -141,4 +146,13 @@ export const scorePauseGap = (
     boundaryScore,
     confidence: clamp(1 - Math.exp(-distance), 0, 1) * Math.max(0.2, model.separationConfidence),
   };
+};
+
+export const earliestPauseBoundaryMs = (
+  model: PauseTimingModel,
+  precedingSymbol?: '.' | '-'
+): number => {
+  const withinCharacter = selectWithinDistribution(model, precedingSymbol);
+  const midpoint = (withinCharacter.centerMs + model.betweenCharacter.centerMs) / 2;
+  return Math.max(model.boundaryMs, midpoint);
 };

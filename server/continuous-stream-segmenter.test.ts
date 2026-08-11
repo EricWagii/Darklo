@@ -191,6 +191,82 @@ describe('continuous Morse stream segmenter', () => {
     expect(state.pendingSymbols).toBe('');
   });
 
+  it('does not commit a dash during the impossible early tail of a calibrated pause model', () => {
+    const fieldConfig: StreamConfig = {
+      ...config,
+      characterBoundaryMs: 1_800,
+      forceSplitMs: 3_000,
+      pauseTimingModel: {
+        withinCharacter: { centerMs: 240, spreadMs: 53, sampleCount: 18 },
+        withinCharacterAfterDot: { centerMs: 233, spreadMs: 40, sampleCount: 12 },
+        withinCharacterAfterDash: { centerMs: 564, spreadMs: 50, sampleCount: 6 },
+        betweenCharacter: { centerMs: 919, spreadMs: 161, sampleCount: 6 },
+        boundaryMs: 580,
+        separationConfidence: 0.97,
+        source: 'calibrated',
+      },
+    };
+
+    let state = createStreamState();
+    state = appendStreamSymbol(state, { symbol: '-', startedAt: 459, endedAt: 1_000 }, fieldConfig);
+    state = advanceStream(state, 1_150, fieldConfig);
+
+    expect(state.committedText).toBe('');
+    expect(state.pendingSymbols).toBe('-');
+
+    state = appendStreamSymbol(state, { symbol: '.', startedAt: 1_375, endedAt: 1_574 }, fieldConfig);
+    state = appendStreamSymbol(state, { symbol: '.', startedAt: 1_759, endedAt: 1_939 }, fieldConfig);
+    state = appendStreamSymbol(state, { symbol: '.', startedAt: 2_170, endedAt: 2_372 }, fieldConfig);
+    state = advanceStream(state, 3_100, fieldConfig);
+
+    expect(state.committedText).toBe('B');
+    expect(state.pendingSymbols).toBe('');
+  });
+
+  it('replays the 2026-08-11 field capture without fragmenting TBC into TTSTAE', () => {
+    const fieldConfig: StreamConfig = {
+      ...config,
+      characterBoundaryMs: 1_800,
+      forceSplitMs: 3_000,
+      pauseTimingModel: {
+        withinCharacter: { centerMs: 240.1, spreadMs: 52.63, sampleCount: 18 },
+        withinCharacterAfterDot: { centerMs: 233.05, spreadMs: 40, sampleCount: 12 },
+        withinCharacterAfterDash: { centerMs: 563.65, spreadMs: 50.41, sampleCount: 6 },
+        betweenCharacter: { centerMs: 919.2, spreadMs: 161.01, sampleCount: 6 },
+        boundaryMs: 579.65,
+        separationConfidence: 0.971,
+        source: 'calibrated',
+      },
+    };
+    const pulses = [
+      { symbol: '-', startedAt: 240_357.5, endedAt: 240_898.4 },
+      { symbol: '-', startedAt: 242_688.5, endedAt: 243_247.4 },
+      { symbol: '.', startedAt: 243_622.9, endedAt: 243_821.4 },
+      { symbol: '.', startedAt: 244_025.7, endedAt: 244_205.6 },
+      { symbol: '.', startedAt: 244_414.6, endedAt: 244_616.4 },
+      { symbol: '-', startedAt: 246_972.6, endedAt: 247_494.3 },
+      { symbol: '.', startedAt: 247_847.7, endedAt: 247_982.9 },
+      { symbol: '-', startedAt: 248_249.5, endedAt: 248_866.9 },
+      { symbol: '.', startedAt: 249_268.6, endedAt: 249_441.1 },
+    ] as const;
+
+    let state = createStreamState();
+    for (let index = 0; index < pulses.length; index += 1) {
+      const pulse = pulses[index];
+      state = appendStreamSymbol(state, pulse, fieldConfig);
+      const nextStart = pulses[index + 1]?.startedAt;
+      if (nextStart !== undefined) {
+        for (let now = pulse.endedAt + 100; now < nextStart; now += 100) {
+          state = advanceStream(state, now, fieldConfig);
+        }
+      }
+    }
+    state = forceSplit(state, 252_500, fieldConfig);
+
+    expect(state.committedText).toBe('TBC');
+    expect(state.events.filter((item) => item.kind === 'character-committed').map((item) => item.character)).toEqual(['T', 'B', 'C']);
+  });
+
   it('does not let an overlapping pause model delay the configured character boundary', () => {
     const overlappingModel = buildPauseTimingModel({
       withinCharacterGapsMs: [700, 820, 940, 1_020, 1_080],
