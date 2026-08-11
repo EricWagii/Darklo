@@ -23,6 +23,22 @@ export type RhythmCalibrationAttemptResult =
       symbols: string;
     };
 
+export type RhythmCalibrationTrialStatus = 'pending' | 'recording' | 'review' | 'accepted';
+
+export interface RhythmCalibrationTrial {
+  id: number;
+  status: RhythmCalibrationTrialStatus;
+  pulses: PulseInput[];
+  result: RhythmCalibrationAttemptResult | null;
+}
+
+export interface AcceptedRhythmCalibrationSamples {
+  withinCharacterGapsMs: number[];
+  withinCharacterGapsAfterDotMs: number[];
+  withinCharacterGapsAfterDashMs: number[];
+  betweenCharacterGapsMs: number[];
+}
+
 export const evaluateRhythmCalibrationAttempt = (
   pulses: readonly PulseInput[],
   config: {
@@ -74,4 +90,91 @@ export const evaluateRhythmCalibrationAttempt = (
     withinCharacterGapsAfterDashMs,
     betweenCharacterGapsMs,
   };
+};
+
+export const createRhythmCalibrationTrials = (count: number): RhythmCalibrationTrial[] =>
+  Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    status: 'pending',
+    pulses: [],
+    result: null,
+  }));
+
+export const beginRhythmCalibrationTrial = (
+  trials: readonly RhythmCalibrationTrial[],
+  trialIndex: number
+): RhythmCalibrationTrial[] => {
+  if (trials.some((trial) => trial.status === 'recording')) return [...trials];
+  return trials.map((trial, index) => index === trialIndex
+    ? { ...trial, status: 'recording', pulses: [], result: null }
+    : trial);
+};
+
+export const appendRhythmCalibrationPulse = (
+  trials: readonly RhythmCalibrationTrial[],
+  trialIndex: number,
+  pulse: PulseInput
+): RhythmCalibrationTrial[] => trials.map((trial, index) => (
+  index === trialIndex && trial.status === 'recording'
+    ? { ...trial, pulses: [...trial.pulses, pulse] }
+    : trial
+));
+
+export const finishRhythmCalibrationTrial = (
+  trials: readonly RhythmCalibrationTrial[],
+  trialIndex: number,
+  config: {
+    durationBoundaryMs: number;
+    uncertaintyMarginMs: number;
+  }
+): RhythmCalibrationTrial[] => trials.map((trial, index) => (
+  index === trialIndex && trial.status === 'recording'
+    ? {
+        ...trial,
+        status: 'review',
+        result: evaluateRhythmCalibrationAttempt(trial.pulses, config),
+      }
+    : trial
+));
+
+export const acceptRhythmCalibrationTrial = (
+  trials: readonly RhythmCalibrationTrial[],
+  trialIndex: number
+): RhythmCalibrationTrial[] => trials.map((trial, index) => (
+  index === trialIndex && trial.status === 'review' && trial.result?.ok
+    ? { ...trial, status: 'accepted' }
+    : trial
+));
+
+export const resetRhythmCalibrationTrial = (
+  trials: readonly RhythmCalibrationTrial[],
+  trialIndex: number
+): RhythmCalibrationTrial[] => trials.map((trial, index) => index === trialIndex
+  ? { ...trial, status: 'pending', pulses: [], result: null }
+  : trial);
+
+export const buildAcceptedRhythmCalibrationSamples = (
+  trials: readonly RhythmCalibrationTrial[],
+  requiredCount: number
+): AcceptedRhythmCalibrationSamples | null => {
+  if (trials.length !== requiredCount || trials.some((trial) => trial.status !== 'accepted' || !trial.result?.ok)) {
+    return null;
+  }
+
+  const acceptedResults = trials.map((trial) => trial.result).filter(
+    (result): result is Extract<RhythmCalibrationAttemptResult, { ok: true }> => Boolean(result?.ok)
+  );
+  if (acceptedResults.length !== requiredCount) return null;
+
+  return acceptedResults.reduce<AcceptedRhythmCalibrationSamples>((samples, result) => ({
+    withinCharacterGapsMs: [...samples.withinCharacterGapsMs, ...result.withinCharacterGapsMs],
+    withinCharacterGapsAfterDotMs: [...samples.withinCharacterGapsAfterDotMs, ...result.withinCharacterGapsAfterDotMs],
+    withinCharacterGapsAfterDashMs: [...samples.withinCharacterGapsAfterDashMs, ...result.withinCharacterGapsAfterDashMs],
+    betweenCharacterGapsMs: [...samples.betweenCharacterGapsMs, ...result.betweenCharacterGapsMs],
+  }), {
+    withinCharacterGapsMs: [],
+    withinCharacterGapsAfterDotMs: [],
+    withinCharacterGapsAfterDashMs: [],
+    betweenCharacterGapsMs: [],
+  });
 };

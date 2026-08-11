@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  acceptRhythmCalibrationTrial,
+  appendRhythmCalibrationPulse,
+  beginRhythmCalibrationTrial,
+  buildAcceptedRhythmCalibrationSamples,
+  createRhythmCalibrationTrials,
+  finishRhythmCalibrationTrial,
   evaluateRhythmCalibrationAttempt,
+  resetRhythmCalibrationTrial,
   RHYTHM_CALIBRATION_PATTERN,
 } from '../client/src/lib/continuous-rhythm-calibration';
 
@@ -65,5 +72,57 @@ describe('continuous Morse rhythm calibration attempt', () => {
       durationBoundaryMs: 500,
       uncertaintyMarginMs: 80,
     })).toMatchObject({ ok: false, reason: 'incomplete-attempt' });
+  });
+
+  it('keeps three SOS trials isolated until each trial is explicitly accepted', () => {
+    const config = { durationBoundaryMs: 500, uncertaintyMarginMs: 80 };
+    let trials = createRhythmCalibrationTrials(3);
+
+    for (let trialIndex = 0; trialIndex < 3; trialIndex += 1) {
+      trials = beginRhythmCalibrationTrial(trials, trialIndex);
+      for (const event of sosAttempt) {
+        trials = appendRhythmCalibrationPulse(trials, trialIndex, event);
+      }
+      trials = finishRhythmCalibrationTrial(trials, trialIndex, config);
+
+      expect(trials[trialIndex].status).toBe('review');
+      expect(buildAcceptedRhythmCalibrationSamples(trials, 3)).toBeNull();
+
+      trials = acceptRhythmCalibrationTrial(trials, trialIndex);
+    }
+
+    const samples = buildAcceptedRhythmCalibrationSamples(trials, 3);
+    expect(samples).not.toBeNull();
+    expect(samples?.betweenCharacterGapsMs).toHaveLength(6);
+    expect(samples?.withinCharacterGapsMs).toHaveLength(18);
+  });
+
+  it('removes a retried trial completely without changing the other accepted trials', () => {
+    const config = { durationBoundaryMs: 500, uncertaintyMarginMs: 80 };
+    let trials = createRhythmCalibrationTrials(3);
+
+    for (let trialIndex = 0; trialIndex < 3; trialIndex += 1) {
+      trials = beginRhythmCalibrationTrial(trials, trialIndex);
+      for (const event of sosAttempt) {
+        trials = appendRhythmCalibrationPulse(trials, trialIndex, event);
+      }
+      trials = finishRhythmCalibrationTrial(trials, trialIndex, config);
+      trials = acceptRhythmCalibrationTrial(trials, trialIndex);
+    }
+
+    trials = resetRhythmCalibrationTrial(trials, 1);
+
+    expect(trials[0].status).toBe('accepted');
+    expect(trials[1]).toMatchObject({ status: 'pending', pulses: [], result: null });
+    expect(trials[2].status).toBe('accepted');
+    expect(buildAcceptedRhythmCalibrationSamples(trials, 3)).toBeNull();
+  });
+
+  it('does not let a second trial record while another trial is active', () => {
+    let trials = createRhythmCalibrationTrials(3);
+    trials = beginRhythmCalibrationTrial(trials, 0);
+    trials = beginRhythmCalibrationTrial(trials, 1);
+
+    expect(trials.map((trial) => trial.status)).toEqual(['recording', 'pending', 'pending']);
   });
 });

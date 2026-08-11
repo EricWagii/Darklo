@@ -191,6 +191,56 @@ describe('continuous Morse stream segmenter', () => {
     expect(state.pendingSymbols).toBe('');
   });
 
+  it('does not commit an extendable dash prefix during a slower physiological recovery pause', () => {
+    const dashRecoveryConfig: StreamConfig = {
+      ...config,
+      characterBoundaryMs: 1_800,
+      forceSplitMs: 3_000,
+      pauseTimingModel: {
+        withinCharacter: { centerMs: 240, spreadMs: 53, sampleCount: 18 },
+        withinCharacterAfterDot: { centerMs: 233, spreadMs: 40, sampleCount: 12 },
+        withinCharacterAfterDash: { centerMs: 564, spreadMs: 50, sampleCount: 6 },
+        betweenCharacter: { centerMs: 919, spreadMs: 161, sampleCount: 6 },
+        boundaryMs: 580,
+        separationConfidence: 0.97,
+        source: 'calibrated',
+      },
+    };
+
+    let dotState = createStreamState();
+    dotState = appendStreamSymbol(
+      dotState,
+      { symbol: '.', startedAt: 0, endedAt: 300 },
+      dashRecoveryConfig
+    );
+    dotState = advanceStream(dotState, 1_100, dashRecoveryConfig);
+    expect(dotState.committedText).toBe('E');
+
+    let state = createStreamState();
+    const pulses = [
+      { symbol: '-' as const, startedAt: 0, endedAt: 800 },
+      { symbol: '-' as const, startedAt: 2_050, endedAt: 2_850 },
+      { symbol: '-' as const, startedAt: 4_150, endedAt: 4_950 },
+    ];
+
+    for (let index = 0; index < pulses.length; index += 1) {
+      const pulse = pulses[index];
+      state = appendStreamSymbol(state, pulse, dashRecoveryConfig);
+      const nextStart = pulses[index + 1]?.startedAt;
+      if (nextStart !== undefined) {
+        for (let now = pulse.endedAt + 100; now < nextStart; now += 100) {
+          state = advanceStream(state, now, dashRecoveryConfig);
+        }
+        expect(state.committedText).toBe('');
+      }
+    }
+
+    state = advanceStream(state, pulses.at(-1)!.endedAt + 1_800, dashRecoveryConfig);
+
+    expect(state.committedText).toBe('O');
+    expect(state.events.filter((item) => item.kind === 'character-committed').map((item) => item.character)).toEqual(['O']);
+  });
+
   it('does not commit a dash during the impossible early tail of a calibrated pause model', () => {
     const fieldConfig: StreamConfig = {
       ...config,

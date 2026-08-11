@@ -13,10 +13,17 @@ describe('continuous Morse pause calibration UI', () => {
     expect(source).toContain('RHYTHM_CALIBRATION_TARGET');
     expect(source).toContain('节奏练习');
     expect(source).toContain('... --- ...');
+    expect(source).toContain('开始本轮');
+    expect(source).toContain('结束本轮');
+    expect(source).toContain('确认有效');
+    expect(source).toContain('重来');
+    expect(source).toContain('只有确认有效的轮次才会进入最终节奏模型');
   });
 
   it('retries mismatched practice and surfaces overlap warnings', () => {
-    expect(source).toContain('evaluateRhythmCalibrationAttempt');
+    expect(source).toContain('finishRhythmCalibrationTrial');
+    expect(source).toContain('resetRhythmCalibrationTrial');
+    expect(source).toContain('acceptRhythmCalibrationTrial');
     expect(source).toContain('buildPauseTimingModel');
     expect(source).toContain('rhythmCalibrationWarning');
     expect(source).toContain('本轮节奏与 SOS 不一致');

@@ -96,6 +96,9 @@ const lastMorseSymbol = (symbols: string): MorseSymbol | undefined => {
   return symbol === '.' || symbol === '-' ? symbol : undefined;
 };
 
+const isExtendableMorsePrefix = (symbols: string): boolean =>
+  isMorsePrefix(`${symbols}.`) || isMorsePrefix(`${symbols}-`);
+
 const usablePauseModel = (config: StreamConfig): PauseTimingModel | null => {
   const model = config.pauseTimingModel;
   return model?.source === 'calibrated' && model.separationConfidence >= 0.5
@@ -103,13 +106,45 @@ const usablePauseModel = (config: StreamConfig): PauseTimingModel | null => {
     : null;
 };
 
-const adaptiveBoundaryCeiling = (config: StreamConfig, model: PauseTimingModel): number => {
+const dashRecoveryBoundaryFloor = (
+  config: StreamConfig,
+  model: PauseTimingModel,
+  pendingSymbols: string
+): number => {
+  if (lastMorseSymbol(pendingSymbols) !== '-' || !isExtendableMorsePrefix(pendingSymbols)) return 0;
+  const distribution = model.withinCharacterAfterDash ?? model.withinCharacter;
+  const learnedRecoveryCeiling = distribution.centerMs + distribution.spreadMs * 4;
+  const configuredRecoveryFloor = config.characterBoundaryMs - config.boundaryUncertaintyMs;
+  return Math.min(
+    config.forceSplitMs - 100,
+    Math.max(0, learnedRecoveryCeiling, configuredRecoveryFloor)
+  );
+};
+
+const candidateBoundaryFloor = (
+  config: StreamConfig,
+  model: PauseTimingModel,
+  pendingSymbols: string
+): number => Math.max(
+  earliestPauseBoundaryMs(model, lastMorseSymbol(pendingSymbols)),
+  dashRecoveryBoundaryFloor(config, model, pendingSymbols)
+);
+
+const adaptiveBoundaryCeiling = (
+  config: StreamConfig,
+  model: PauseTimingModel,
+  pendingSymbols: string
+): number => {
   const modelCeiling = model.boundaryMs + model.betweenCharacter.spreadMs;
   const configuredCeiling = config.characterBoundaryMs * 1.35;
   const emergencyCeiling = Math.max(config.characterBoundaryMs, config.forceSplitMs - 100);
-  return Math.min(
+  const generalCeiling = Math.min(
     emergencyCeiling,
     Math.max(config.characterBoundaryMs, Math.min(configuredCeiling, modelCeiling))
+  );
+  return Math.min(
+    emergencyCeiling,
+    Math.max(generalCeiling, dashRecoveryBoundaryFloor(config, model, pendingSymbols))
   );
 };
 
@@ -229,7 +264,6 @@ export const appendStreamAlternatives = (
     const lower = config.characterBoundaryMs - config.boundaryUncertaintyMs;
     const upper = config.characterBoundaryMs + config.boundaryUncertaintyMs;
     const pauseModel = usablePauseModel(config);
-    const pauseCeiling = pauseModel ? adaptiveBoundaryCeiling(config, pauseModel) : null;
     const expanded: SegmentationCandidate[] = [];
     let hasCandidateBoundary = false;
 
@@ -238,8 +272,11 @@ export const appendStreamAlternatives = (
         ? scorePauseGap(pauseModel, effectiveGap, lastMorseSymbol(candidate.pendingSymbols))
         : null;
       const earliestBoundary = pauseModel
-        ? earliestPauseBoundaryMs(pauseModel, lastMorseSymbol(candidate.pendingSymbols))
+        ? candidateBoundaryFloor(config, pauseModel, candidate.pendingSymbols)
         : lower;
+      const pauseCeiling = pauseModel
+        ? adaptiveBoundaryCeiling(config, pauseModel, candidate.pendingSymbols)
+        : null;
       const allowContinuation = pauseScores !== null
         ? effectiveGap < (pauseCeiling ?? Number.POSITIVE_INFINITY)
         : effectiveGap <= upper;
@@ -342,10 +379,10 @@ export const advanceStream = (
   const pauseModel = usablePauseModel(config);
   if (pauseModel) {
     const precedingSymbol = lastMorseSymbol(state.pendingSymbols);
-    if (idleMs < earliestPauseBoundaryMs(pauseModel, precedingSymbol)) return state;
+    if (idleMs < candidateBoundaryFloor(config, pauseModel, state.pendingSymbols)) return state;
     const pauseScore = scorePauseGap(pauseModel, idleMs, precedingSymbol);
     if (
-      idleMs < adaptiveBoundaryCeiling(config, pauseModel)
+      idleMs < adaptiveBoundaryCeiling(config, pauseModel, state.pendingSymbols)
       && pauseScore.boundaryScore <= pauseScore.continuationScore + 0.35
     ) {
       return state;

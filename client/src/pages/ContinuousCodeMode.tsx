@@ -32,7 +32,6 @@ import {
   type ContinuousBaselineStats,
   type ContinuousCalibration,
   type DetectorSnapshot,
-  type PulseDetectorEvent,
 } from '@/lib/continuous-emg-detector';
 import { MORSE_ENTRIES } from '@/lib/morse-code';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
@@ -58,8 +57,15 @@ import { evaluateBaselineCapture } from '@/lib/baseline-capture-window';
 import { createMonotonicSessionClock } from '@/lib/monotonic-session-clock';
 import { buildPauseTimingModel } from '@/lib/continuous-pause-calibration';
 import {
-  evaluateRhythmCalibrationAttempt,
+  acceptRhythmCalibrationTrial,
+  appendRhythmCalibrationPulse,
+  beginRhythmCalibrationTrial,
+  buildAcceptedRhythmCalibrationSamples,
+  createRhythmCalibrationTrials,
+  finishRhythmCalibrationTrial,
+  resetRhythmCalibrationTrial,
   RHYTHM_CALIBRATION_PATTERN,
+  type RhythmCalibrationTrial,
 } from '@/lib/continuous-rhythm-calibration';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
@@ -120,6 +126,27 @@ const blockedReasonNames: Record<string, string> = {
   overlong: '持续动作过长',
 };
 
+const rhythmTrialStatusNames: Record<RhythmCalibrationTrial['status'], string> = {
+  pending: '未开始',
+  recording: '录制中',
+  review: '待确认',
+  accepted: '已确认',
+};
+
+const rhythmTrialFailureMessage = (trial: RhythmCalibrationTrial): string => {
+  if (!trial.result || trial.result.ok) return '';
+  if (trial.result.reason === 'incomplete-attempt') {
+    return `本轮节奏与 SOS 不一致：记录了 ${trial.pulses.length}/${RHYTHM_CALIBRATION_PATTERN.length} 个事件`;
+  }
+  if (trial.result.reason === 'uncertain-pulse') {
+    return '本轮节奏与 SOS 不一致：包含无法可靠区分的短时/长时事件';
+  }
+  if (trial.result.reason === 'symbol-mismatch') {
+    return `本轮节奏与 SOS 不一致：识别为 ${trial.result.symbols || '空序列'}`;
+  }
+  return '本轮节奏与 SOS 不一致：检测到无效停顿';
+};
+
 export default function ContinuousCodeMode() {
   const [, navigate] = useLocation();
   const serial = useSerialConnectionContext();
@@ -136,14 +163,10 @@ export default function ContinuousCodeMode() {
   const longDurationsRef = useRef<number[]>([]);
   const [shortDurations, setShortDurations] = useState<number[]>([]);
   const [longDurations, setLongDurations] = useState<number[]>([]);
-  const rhythmPulsesRef = useRef<PulseDetectorEvent[]>([]);
-  const rhythmWithinGapsRef = useRef<number[]>([]);
-  const rhythmWithinDotGapsRef = useRef<number[]>([]);
-  const rhythmWithinDashGapsRef = useRef<number[]>([]);
-  const rhythmBetweenGapsRef = useRef<number[]>([]);
-  const rhythmAcceptedRef = useRef(0);
-  const [rhythmPulseCount, setRhythmPulseCount] = useState(0);
-  const [rhythmAcceptedCount, setRhythmAcceptedCount] = useState(0);
+  const rhythmTrialsRef = useRef<RhythmCalibrationTrial[]>(createRhythmCalibrationTrials(RHYTHM_CALIBRATION_TARGET));
+  const [rhythmTrials, setRhythmTrialsState] = useState<RhythmCalibrationTrial[]>(
+    () => createRhythmCalibrationTrials(RHYTHM_CALIBRATION_TARGET)
+  );
   const [rhythmCalibrationWarning, setRhythmCalibrationWarning] = useState<string | null>(null);
   const [calibration, setCalibration] = useState<ContinuousCalibration | null>(null);
   const calibrationRef = useRef<ContinuousCalibration | null>(null);
@@ -175,6 +198,11 @@ export default function ContinuousCodeMode() {
   const setPhase = useCallback((next: SessionPhase) => {
     phaseRef.current = next;
     setPhaseState(next);
+  }, []);
+
+  const commitRhythmTrials = useCallback((next: RhythmCalibrationTrial[]) => {
+    rhythmTrialsRef.current = next;
+    setRhythmTrialsState(next);
   }, []);
 
   const decoderConfig = useMemo<DecoderConfig | null>(() => {
@@ -228,16 +256,9 @@ export default function ContinuousCodeMode() {
     baselineStatsRef.current = null;
     shortDurationsRef.current = [];
     longDurationsRef.current = [];
-    rhythmPulsesRef.current = [];
-    rhythmWithinGapsRef.current = [];
-    rhythmWithinDotGapsRef.current = [];
-    rhythmWithinDashGapsRef.current = [];
-    rhythmBetweenGapsRef.current = [];
-    rhythmAcceptedRef.current = 0;
+    commitRhythmTrials(createRhythmCalibrationTrials(RHYTHM_CALIBRATION_TARGET));
     setShortDurations([]);
     setLongDurations([]);
-    setRhythmPulseCount(0);
-    setRhythmAcceptedCount(0);
     setRhythmCalibrationWarning(null);
     setCalibration(null);
     calibrationRef.current = null;
@@ -256,7 +277,7 @@ export default function ContinuousCodeMode() {
     baselineStartedAtRef.current = sessionClockRef.current.now();
     setPhase('baseline');
     addTimeline({ at: sessionClockRef.current.now(), kind: 'system', message: '开始采集 3 秒静息基线' });
-  }, [addTimeline, setPhase]);
+  }, [addTimeline, commitRhythmTrials, setPhase]);
 
   const startLongCalibration = useCallback(() => {
     detectorRef.current?.reset();
@@ -278,14 +299,7 @@ export default function ContinuousCodeMode() {
     setCalibration(result.calibration);
     detectorRef.current = new ContinuousEmgDetector(result.calibration.detectorConfig);
     setDecoder(resetDecoder());
-    rhythmPulsesRef.current = [];
-    rhythmWithinGapsRef.current = [];
-    rhythmWithinDotGapsRef.current = [];
-    rhythmWithinDashGapsRef.current = [];
-    rhythmBetweenGapsRef.current = [];
-    rhythmAcceptedRef.current = 0;
-    setRhythmPulseCount(0);
-    setRhythmAcceptedCount(0);
+    commitRhythmTrials(createRhythmCalibrationTrials(RHYTHM_CALIBRATION_TARGET));
     setRhythmCalibrationWarning(null);
     setPhase('rhythmCalibration');
     addTimeline({
@@ -293,7 +307,90 @@ export default function ContinuousCodeMode() {
       kind: 'system',
       message: `请按自然节奏完成 ${RHYTHM_CALIBRATION_TARGET} 轮 SOS（... --- ...）节奏练习`,
     });
-  }, [addTimeline, setPhase]);
+  }, [addTimeline, commitRhythmTrials, setPhase]);
+
+  const startRhythmTrial = useCallback((trialIndex: number) => {
+    if (phaseRef.current !== 'rhythmCalibration') return;
+    const next = beginRhythmCalibrationTrial(rhythmTrialsRef.current, trialIndex);
+    if (next[trialIndex]?.status !== 'recording') return;
+    commitRhythmTrials(next);
+    detectorRef.current?.reset();
+    setRhythmCalibrationWarning(null);
+    addTimeline({
+      at: sessionClockRef.current.now(),
+      kind: 'system',
+      message: `开始第 ${trialIndex + 1} 轮 SOS 节奏校正`,
+    });
+  }, [addTimeline, commitRhythmTrials]);
+
+  const finishRhythmTrial = useCallback((trialIndex: number) => {
+    const activeCalibration = calibrationRef.current;
+    if (!activeCalibration || phaseRef.current !== 'rhythmCalibration') return;
+    const next = finishRhythmCalibrationTrial(rhythmTrialsRef.current, trialIndex, activeCalibration);
+    const trial = next[trialIndex];
+    if (!trial || trial.status !== 'review') return;
+    detectorRef.current?.reset();
+    commitRhythmTrials(next);
+
+    const warning = rhythmTrialFailureMessage(trial);
+    setRhythmCalibrationWarning(warning || null);
+    addTimeline({
+      at: sessionClockRef.current.now(),
+      kind: warning ? 'blocked' : 'system',
+      message: warning || `第 ${trialIndex + 1} 轮录制完成，等待确认有效`,
+    });
+  }, [addTimeline, commitRhythmTrials]);
+
+  const resetRhythmTrial = useCallback((trialIndex: number) => {
+    if (phaseRef.current !== 'rhythmCalibration') return;
+    const wasRecording = rhythmTrialsRef.current[trialIndex]?.status === 'recording';
+    const next = resetRhythmCalibrationTrial(rhythmTrialsRef.current, trialIndex);
+    if (wasRecording) detectorRef.current?.reset();
+    commitRhythmTrials(next);
+    setRhythmCalibrationWarning(null);
+    addTimeline({
+      at: sessionClockRef.current.now(),
+      kind: 'system',
+      message: `已清除第 ${trialIndex + 1} 轮节奏数据，可以重新录制`,
+    });
+  }, [addTimeline, commitRhythmTrials]);
+
+  const acceptRhythmTrial = useCallback((trialIndex: number) => {
+    if (phaseRef.current !== 'rhythmCalibration') return;
+    const next = acceptRhythmCalibrationTrial(rhythmTrialsRef.current, trialIndex);
+    if (next[trialIndex]?.status !== 'accepted') return;
+    commitRhythmTrials(next);
+    setRhythmCalibrationWarning(null);
+    addTimeline({
+      at: sessionClockRef.current.now(),
+      kind: 'system',
+      message: `第 ${trialIndex + 1} 轮节奏数据已确认`,
+    });
+
+    const samples = buildAcceptedRhythmCalibrationSamples(next, RHYTHM_CALIBRATION_TARGET);
+    const activeCalibration = calibrationRef.current;
+    if (!samples || !activeCalibration) return;
+
+    const timing = buildPauseTimingModel({
+      ...samples,
+      fallbackBoundaryMs: PACE_PRESETS.slow.characterBoundaryMs,
+    });
+    const completedCalibration = {
+      ...activeCalibration,
+      pauseTimingModel: timing.model,
+    };
+    calibrationRef.current = completedCalibration;
+    setCalibration(completedCalibration);
+    detectorRef.current = new ContinuousEmgDetector(completedCalibration.detectorConfig);
+    setRhythmCalibrationWarning(timing.warning);
+    setDecoder(resetDecoder());
+    setPhase('ready');
+    addTimeline({
+      at: sessionClockRef.current.now(),
+      kind: timing.warning ? 'blocked' : 'system',
+      message: timing.warning ?? '三轮节奏校正均已确认，可以开始连续输入',
+    });
+  }, [addTimeline, commitRhythmTrials, setPhase]);
 
   const startDecoding = useCallback(() => {
     if (!calibrationRef.current) return;
@@ -392,11 +489,15 @@ export default function ContinuousCodeMode() {
     }
 
     const detector = detectorRef.current;
+    const activeRhythmTrialIndex = currentPhase === 'rhythmCalibration'
+      ? rhythmTrialsRef.current.findIndex((trial) => trial.status === 'recording')
+      : -1;
+    const shouldProcessDetector = currentPhase === 'shortCalibration'
+      || currentPhase === 'longCalibration'
+      || currentPhase === 'decoding'
+      || (currentPhase === 'rhythmCalibration' && activeRhythmTrialIndex >= 0);
     let snapshot = detector?.getSnapshot() ?? emptySnapshot;
-    if (
-      detector &&
-      (currentPhase === 'shortCalibration' || currentPhase === 'longCalibration' || currentPhase === 'rhythmCalibration' || currentPhase === 'decoding')
-    ) {
+    if (detector && shouldProcessDetector) {
       const events = detector.push(sample, timestamp);
       snapshot = detector.getSnapshot();
       for (const event of events) {
@@ -417,69 +518,20 @@ export default function ContinuousCodeMode() {
           setLongDurations(longDurationsRef.current);
           addTimeline({ at: event.endedAt, kind: 'pulse', durationMs: event.durationMs, message: '记录长时事件' });
         } else if (currentPhase === 'rhythmCalibration') {
-          const currentAttempt = [...rhythmPulsesRef.current, event];
-          rhythmPulsesRef.current = currentAttempt;
-          setRhythmPulseCount(currentAttempt.length);
+          if (activeRhythmTrialIndex < 0) continue;
+          const next = appendRhythmCalibrationPulse(
+            rhythmTrialsRef.current,
+            activeRhythmTrialIndex,
+            event
+          );
+          commitRhythmTrials(next);
+          const pulseCount = next[activeRhythmTrialIndex]?.pulses.length ?? 0;
           addTimeline({
             at: event.endedAt,
             kind: 'pulse',
             durationMs: event.durationMs,
-            message: `节奏练习脉冲 ${currentAttempt.length}/${RHYTHM_CALIBRATION_PATTERN.length}`,
+            message: `第 ${activeRhythmTrialIndex + 1} 轮记录事件 ${pulseCount}/${RHYTHM_CALIBRATION_PATTERN.length}`,
           });
-
-          if (currentAttempt.length === RHYTHM_CALIBRATION_PATTERN.length) {
-            const activeCalibration = calibrationRef.current;
-            if (!activeCalibration) continue;
-            const attempt = evaluateRhythmCalibrationAttempt(currentAttempt, activeCalibration);
-            rhythmPulsesRef.current = [];
-            setRhythmPulseCount(0);
-            detectorRef.current?.reset();
-
-            if (!attempt.ok) {
-              const warning = '本轮节奏与 SOS 不一致，请稍作停顿后重试';
-              setRhythmCalibrationWarning(warning);
-              addTimeline({ at: event.endedAt, kind: 'blocked', message: warning });
-              continue;
-            }
-
-            rhythmWithinGapsRef.current.push(...attempt.withinCharacterGapsMs);
-            rhythmWithinDotGapsRef.current.push(...attempt.withinCharacterGapsAfterDotMs);
-            rhythmWithinDashGapsRef.current.push(...attempt.withinCharacterGapsAfterDashMs);
-            rhythmBetweenGapsRef.current.push(...attempt.betweenCharacterGapsMs);
-            rhythmAcceptedRef.current += 1;
-            setRhythmAcceptedCount(rhythmAcceptedRef.current);
-            setRhythmCalibrationWarning(null);
-            addTimeline({
-              at: event.endedAt,
-              kind: 'system',
-              message: `节奏练习通过 ${rhythmAcceptedRef.current}/${RHYTHM_CALIBRATION_TARGET}`,
-            });
-
-            if (rhythmAcceptedRef.current >= RHYTHM_CALIBRATION_TARGET) {
-              const timing = buildPauseTimingModel({
-                withinCharacterGapsMs: rhythmWithinGapsRef.current,
-                withinCharacterGapsAfterDotMs: rhythmWithinDotGapsRef.current,
-                withinCharacterGapsAfterDashMs: rhythmWithinDashGapsRef.current,
-                betweenCharacterGapsMs: rhythmBetweenGapsRef.current,
-                fallbackBoundaryMs: PACE_PRESETS.slow.characterBoundaryMs,
-              });
-              const completedCalibration = {
-                ...activeCalibration,
-                pauseTimingModel: timing.model,
-              };
-              calibrationRef.current = completedCalibration;
-              setCalibration(completedCalibration);
-              detectorRef.current = new ContinuousEmgDetector(completedCalibration.detectorConfig);
-              setRhythmCalibrationWarning(timing.warning);
-              setDecoder(resetDecoder());
-              setPhase('ready');
-              addTimeline({
-                at: event.endedAt,
-                kind: timing.warning ? 'blocked' : 'system',
-                message: timing.warning ?? '节奏校准完成，可以开始连续输入',
-              });
-            }
-          }
         } else if (currentPhase === 'decoding') {
           const config = decoderConfigRef.current;
           if (config) {
@@ -518,7 +570,7 @@ export default function ContinuousCodeMode() {
       setEnvelopeSamples([...envelopeBufferRef.current]);
       setDetectorSnapshot(snapshot);
     }
-  }), [addTimeline, createCalibrationDetector, serial, setPhase]);
+  }), [addTimeline, commitRhythmTrials, createCalibrationDetector, serial, setPhase]);
 
   const connectHardware = async () => {
     try {
@@ -582,6 +634,22 @@ export default function ContinuousCodeMode() {
 
   const exportSession = () => {
     if (continuousCaptureRef.current.columns.timestamps.length === 0) return;
+    const acceptedTrials = rhythmTrialsRef.current.filter(
+      (trial) => trial.status === 'accepted' && trial.result?.ok
+    );
+    const acceptedRhythmSamples = acceptedTrials.reduce((samples, trial) => {
+      if (!trial.result?.ok) return samples;
+      samples.withinCharacterGapsMs.push(...trial.result.withinCharacterGapsMs);
+      samples.withinCharacterGapsAfterDotMs.push(...trial.result.withinCharacterGapsAfterDotMs);
+      samples.withinCharacterGapsAfterDashMs.push(...trial.result.withinCharacterGapsAfterDashMs);
+      samples.betweenCharacterGapsMs.push(...trial.result.betweenCharacterGapsMs);
+      return samples;
+    }, {
+      withinCharacterGapsMs: [] as number[],
+      withinCharacterGapsAfterDotMs: [] as number[],
+      withinCharacterGapsAfterDashMs: [] as number[],
+      betweenCharacterGapsMs: [] as number[],
+    });
     const payload = buildContinuousDiagnosticPackage({
       sessionId: sessionIdRef.current,
       sessionStartedAt: sessionStartedAtRef.current,
@@ -600,12 +668,9 @@ export default function ContinuousCodeMode() {
       longDurationsMs: longDurationsRef.current,
       rhythmCalibration: {
         pattern: RHYTHM_CALIBRATION_PATTERN,
-        acceptedAttempts: rhythmAcceptedRef.current,
+        acceptedAttempts: acceptedTrials.length,
         targetAttempts: RHYTHM_CALIBRATION_TARGET,
-        withinCharacterGapsMs: [...rhythmWithinGapsRef.current],
-        withinCharacterGapsAfterDotMs: [...rhythmWithinDotGapsRef.current],
-        withinCharacterGapsAfterDashMs: [...rhythmWithinDashGapsRef.current],
-        betweenCharacterGapsMs: [...rhythmBetweenGapsRef.current],
+        ...acceptedRhythmSamples,
         warning: rhythmCalibrationWarning,
       },
       decoder,
@@ -616,6 +681,11 @@ export default function ContinuousCodeMode() {
     downloadDiagnosticJson(payload, 'continuous-neuromuscular-decoder-complete-diagnostic');
   };
 
+  const rhythmAcceptedCount = rhythmTrials.filter((trial) => trial.status === 'accepted').length;
+  const activeRhythmTrialIndex = rhythmTrials.findIndex((trial) => trial.status === 'recording');
+  const rhythmPulseCount = activeRhythmTrialIndex >= 0
+    ? rhythmTrials[activeRhythmTrialIndex].pulses.length
+    : 0;
   const targetTextRequired = evaluationMode === 'scripted' && !targetText;
   const tentativeText = getTentativeText(decoder);
   const streamStandbyLabel = ({
@@ -639,7 +709,9 @@ export default function ContinuousCodeMode() {
           : phase === 'longCalibration'
             ? `请完成至少 ${CALIBRATION_TARGET} 次长时肌电事件，当前 ${longDurations.length} 次。`
           : phase === 'rhythmCalibration'
-            ? `请按自然节奏输入 SOS（... --- ...），已通过 ${rhythmAcceptedCount}/${RHYTHM_CALIBRATION_TARGET} 轮；本轮 ${rhythmPulseCount}/${RHYTHM_CALIBRATION_PATTERN.length} 个事件。`
+            ? activeRhythmTrialIndex >= 0
+              ? `第 ${activeRhythmTrialIndex + 1} 轮正在录制，已记录 ${rhythmPulseCount} 个事件；完成后请手动结束并确认。`
+              : `请分别录制并确认 ${RHYTHM_CALIBRATION_TARGET} 轮 SOS，当前已确认 ${rhythmAcceptedCount}/${RHYTHM_CALIBRATION_TARGET} 轮。`
             : phase === 'ready' && targetTextRequired
               ? '请先输入目标文本。'
               : phase === 'ready'
@@ -729,16 +801,66 @@ export default function ContinuousCodeMode() {
                 )}
                 {phase === 'rhythmCalibration' && (
                   <Button disabled>
-                    节奏练习 {rhythmAcceptedCount}/{RHYTHM_CALIBRATION_TARGET} · 本轮 {rhythmPulseCount}/{RHYTHM_CALIBRATION_PATTERN.length}
+                    节奏练习已确认 {rhythmAcceptedCount}/{RHYTHM_CALIBRATION_TARGET}
                   </Button>
                 )}
               </div>
             </div>
             {phase === 'rhythmCalibration' && (
               <div className="mt-5 border p-4" style={{ borderColor: 'var(--color-border)' }}>
-                <div className="label mb-2">节奏练习</div>
+                <div className="label mb-2">三轮独立节奏校正</div>
                 <div className="font-mono text-2xl text-accent" style={{ letterSpacing: 0 }}>... --- ...</div>
-                <div className="mt-2 text-sm text-secondary">保持自然输入速度；系统学习您的字符内停顿和字符间停顿，不要求刻意压缩长咬后的释放时间。</div>
+                <div className="mt-2 text-sm text-secondary">
+                  每轮可独立开始、结束和重来。结束后先检查识别序列，只有确认有效的轮次才会进入最终节奏模型。
+                </div>
+                <div className="mt-5 grid gap-3 lg:grid-cols-3">
+                  {rhythmTrials.map((trial, trialIndex) => {
+                    const failure = rhythmTrialFailureMessage(trial);
+                    const isValidReview = trial.status === 'review' && trial.result?.ok;
+                    return (
+                      <div key={trial.id} className="border p-4" style={{ borderColor: 'var(--color-border)' }}>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-semibold">第 {trial.id} 轮</div>
+                          <div className={trial.status === 'accepted' ? 'text-success text-sm' : trial.status === 'review' && failure ? 'text-error text-sm' : 'text-secondary text-sm'}>
+                            {rhythmTrialStatusNames[trial.status]}
+                          </div>
+                        </div>
+                        <div className="mt-3 text-sm text-secondary">
+                          已记录 {trial.pulses.length}/{RHYTHM_CALIBRATION_PATTERN.length} 个事件
+                        </div>
+                        {trial.result && (
+                          <div className="mt-2 font-mono text-sm" style={{ letterSpacing: 0 }}>
+                            识别序列：<span className={trial.result.ok ? 'text-success' : 'text-error'}>{trial.result.symbols || '空'}</span>
+                          </div>
+                        )}
+                        {failure && <div className="mt-2 text-xs text-error" role="alert">{failure}</div>}
+                        {isValidReview && <div className="mt-2 text-xs text-success">本轮符合 SOS，确认后才会计入模型。</div>}
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {trial.status === 'pending' && (
+                            <Button size="sm" variant="primary" disabled={activeRhythmTrialIndex >= 0} onClick={() => startRhythmTrial(trialIndex)}>
+                              <Play size={14} className="inline mr-2" />开始本轮
+                            </Button>
+                          )}
+                          {trial.status === 'recording' && (
+                            <Button size="sm" variant="primary" onClick={() => finishRhythmTrial(trialIndex)}>
+                              <Square size={13} className="inline mr-2" />结束本轮
+                            </Button>
+                          )}
+                          {isValidReview && (
+                            <Button size="sm" variant="success" onClick={() => acceptRhythmTrial(trialIndex)}>
+                              确认有效
+                            </Button>
+                          )}
+                          {trial.status !== 'pending' && (
+                            <Button size="sm" onClick={() => resetRhythmTrial(trialIndex)}>
+                              <RotateCcw size={14} className="inline mr-2" />重来
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {rhythmCalibrationWarning && (
