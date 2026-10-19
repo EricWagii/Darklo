@@ -15,6 +15,7 @@ import CollectionMode from "./pages/CollectionMode";
 import RecognitionMode from "./pages/RecognitionMode";
 import RecognitionDiagnostics from "./pages/RecognitionDiagnostics";
 import ContinuousCodeMode from "./pages/ContinuousCodeMode";
+import GestureRecognition from "./pages/GestureRecognition";
 import DataManagement from "./pages/DataManagement";
 import Settings from "./pages/Settings";
 import DemoMode from "./pages/DemoMode";
@@ -54,6 +55,12 @@ function Router() {
             <RecognitionDiagnostics />
           </ProtectedRoute>
         )}
+      </Route>
+      <Route path="/gesture-single">
+        {() => <ProtectedRoute><GestureRecognition key="single" mode="single" /></ProtectedRoute>}
+      </Route>
+      <Route path="/gesture-sequence">
+        {() => <ProtectedRoute><GestureRecognition key="sequence" mode="sequence" /></ProtectedRoute>}
       </Route>
       <Route path="/continuous-code">
         {() => (

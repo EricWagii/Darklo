@@ -191,6 +191,12 @@ export default function Home() {
               <Button variant="secondary" onClick={() => navigate('/recognition-diagnostics')}>
                 识别诊断
               </Button>
+              <Button variant="secondary" onClick={() => navigate('/gesture-single')}>
+                独立指令识别 · 新版
+              </Button>
+              <Button variant="secondary" onClick={() => navigate('/gesture-sequence')}>
+                连续分窗识别 · 实验
+              </Button>
               <Button variant="secondary" onClick={() => navigate('/continuous-code')}>
                 连续肌电编码
               </Button>
