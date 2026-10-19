@@ -193,6 +193,44 @@ export function medianFilter(
 }
 
 /**
+ * Replace only isolated outliers. Applying a five-sample median to every
+ * sample erases legitimate EMG oscillations near 100 Hz at 500 samples/s.
+ */
+function suppressIsolatedSpikes(signal: number[], boundaryOnly: boolean = false): number[] {
+  if (signal.length < 5) return [...signal];
+
+  const cleaned = [...signal];
+  for (let i = 0; i < signal.length; i++) {
+    if (boundaryOnly && i >= 2 && i < signal.length - 2) continue;
+
+    // A causal filter spreads an impulse at the first sample across later
+    // samples, so the leading edge must be checked before high-pass filtering.
+    const neighbors = i < 2
+      ? signal.slice(i + 1, i + 5)
+      : i >= signal.length - 2
+        ? signal.slice(i - 4, i)
+        : [signal[i - 2], signal[i - 1], signal[i + 1], signal[i + 2]];
+    if (neighbors.length !== 4) continue;
+    neighbors.sort((a, b) => a - b);
+    const center = (neighbors[1] + neighbors[2]) / 2;
+    const deviations = neighbors.map((value) => Math.abs(value - center))
+      .sort((a, b) => a - b);
+    const mad = (deviations[1] + deviations[2]) / 2;
+    const threshold = 6 * 1.4826 * mad;
+    const neighborPeak = Math.max(...neighbors.map((value) => Math.abs(value)));
+
+    if (
+      Math.abs(signal[i] - center) > threshold &&
+      Math.abs(signal[i] - center) > 4 * neighborPeak
+    ) {
+      cleaned[i] = center;
+    }
+  }
+
+  return cleaned;
+}
+
+/**
  * 信号重采样（改变采样率）
  * @param signal 输入信号
  * @param targetLength 目标长度
@@ -319,9 +357,9 @@ export function comprehensiveFiltering(
   samplingRate: number = 500
 ): { ch1: number[]; ch2: number[]; ch3: number[] } {
   // 第1步：高通滤波去除低频漂移
-  let filtered1 = highPassFilter(ch1, 20, samplingRate);
-  let filtered2 = highPassFilter(ch2, 20, samplingRate);
-  let filtered3 = highPassFilter(ch3, 20, samplingRate);
+  let filtered1 = highPassFilter(suppressIsolatedSpikes(ch1, true), 20, samplingRate);
+  let filtered2 = highPassFilter(suppressIsolatedSpikes(ch2, true), 20, samplingRate);
+  let filtered3 = highPassFilter(suppressIsolatedSpikes(ch3, true), 20, samplingRate);
 
   // 第2步：陷波滤波去除工频干扰（50Hz）
   // 关键修复：ch1 的高 RMS 来自 50Hz 工频噪声，必须在这里去除
@@ -329,10 +367,10 @@ export function comprehensiveFiltering(
   filtered2 = notchFilter(filtered2, 50, samplingRate, 35);
   filtered3 = notchFilter(filtered3, 50, samplingRate, 35);
 
-  // 第3步：中值滤波去除脉冲噪声
-  filtered1 = medianFilter(filtered1, 5);
-  filtered2 = medianFilter(filtered2, 5);
-  filtered3 = medianFilter(filtered3, 5);
+  // 第3步：只修正孤立脉冲，保留高频肌电成分
+  filtered1 = suppressIsolatedSpikes(filtered1);
+  filtered2 = suppressIsolatedSpikes(filtered2);
+  filtered3 = suppressIsolatedSpikes(filtered3);
 
   // 第4步：自适应滤波（如果有基线）
   if (restingBaseline) {
@@ -341,9 +379,9 @@ export function comprehensiveFiltering(
       filtered2,
       filtered3,
       {
-        ch1: medianFilter(restingBaseline.ch1, 5),
-        ch2: medianFilter(restingBaseline.ch2, 5),
-        ch3: medianFilter(restingBaseline.ch3, 5),
+        ch1: suppressIsolatedSpikes(restingBaseline.ch1),
+        ch2: suppressIsolatedSpikes(restingBaseline.ch2),
+        ch3: suppressIsolatedSpikes(restingBaseline.ch3),
       }
     );
     filtered1 = adaptive.ch1;

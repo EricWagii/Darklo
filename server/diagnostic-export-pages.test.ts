@@ -15,6 +15,20 @@ describe('diagnostic export controls', () => {
     expect(source).not.toContain('不含波形');
   });
 
+  it('exports measured rate for each recognition attempt, including rejected captures', () => {
+    const source = readPage('RecognitionMode.tsx');
+    expect(source).toContain('measuredSampleRate: frameRateAssessment.measuredHz');
+    expect(source).toContain('sampleRate: getRestingBaselineSampleRate(globalElectrodeBaseline) ?? HARDWARE_CONFIG.SAMPLE_RATE');
+    expect(source).not.toContain('sampleRate: HARDWARE_CONFIG.SAMPLE_RATE,');
+  });
+
+  it('gates recognition templates against the currently loaded resting baseline rate', () => {
+    const source = readPage('RecognitionMode.tsx');
+    expect(source).toContain('assessRecognitionCollectionsForBaseline(cmd.collections, baselineSampleRate)');
+    expect(source).toContain('if (!baselineSampleRate)');
+    expect(source).toContain('croppingMeta.endIdx - croppingMeta.startIdx + 1');
+  });
+
   it('exports three-channel continuous samples and uses technical presentation copy', () => {
     const source = readPage('ContinuousCodeMode.tsx');
     expect(source).toContain('导出完整诊断包');

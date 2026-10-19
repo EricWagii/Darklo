@@ -119,11 +119,12 @@ export function detectValidSegmentImproved(
     if (isActive[i] && !inActiveRegion) {
       // 开始活跃区域
       inActiveRegion = true;
-      regionStart = i * windowSize;
+      // The energy windows advance by one sample, not by windowSize samples.
+      regionStart = i;
     } else if (!isActive[i] && inActiveRegion) {
       // 结束活跃区域
       inActiveRegion = false;
-      const regionEnd = (i + 1) * windowSize;
+      const regionEnd = i - 1 + windowSize;
       
       // 只记录足够长的活跃区域
       if (regionEnd - regionStart >= minActiveLength) {
@@ -134,7 +135,7 @@ export function detectValidSegmentImproved(
 
   // 处理最后一个活跃区域
   if (inActiveRegion) {
-    const regionEnd = isActive.length * windowSize;
+    const regionEnd = isActive.length - 1 + windowSize;
     if (regionEnd - regionStart >= minActiveLength) {
       activeRegions.push({ start: regionStart, end: regionEnd });
     }

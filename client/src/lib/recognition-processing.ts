@@ -24,12 +24,13 @@ export function processTestWaveform(
   ch1: number[],
   ch2: number[],
   ch3: number[],
-  restingBaseline?: { ch1: number[]; ch2: number[]; ch3: number[] }
+  restingBaseline?: { ch1: number[]; ch2: number[]; ch3: number[] },
+  samplingRate: number = 500
 ): ProcessedWaveform {
   // 使用统一的波形处理流程
   const pipelineConfig: WaveformPipelineConfig = {
     targetLength: 512,
-    samplingRate: 500,
+    samplingRate,
     restingBaseline,
     highPassCutoff: 20,
     adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
@@ -46,6 +47,7 @@ export function processTestWaveform(
     ch2: pipelineResult.processed.ch2,
     ch3: pipelineResult.processed.ch3,
     meta: {
+      samplingRate: pipelineResult.metadata.samplingRate,
       croppingMeta: {
         startIdx: pipelineResult.metadata.cropRange.startIdx,
         endIdx: pipelineResult.metadata.cropRange.endIdx,
@@ -61,6 +63,7 @@ export function processTestWaveform(
       },
       startupArtifactMeta: pipelineResult.metadata.startupArtifact,
       pipelineQualityScore: pipelineResult.metadata.qualityScore,
+      activityEvidence: pipelineResult.metadata.activityEvidence,
     },
   };
 }
@@ -71,12 +74,13 @@ export function processTestWaveform(
  */
 export function processReferenceWaveform(
   waveform: { ch1: number[]; ch2: number[]; ch3: number[] },
-  restingBaseline?: { ch1: number[]; ch2: number[]; ch3: number[] }
+  restingBaseline?: { ch1: number[]; ch2: number[]; ch3: number[] },
+  samplingRate: number = 500
 ): ProcessedWaveform {
   // 使用统一的波形处理流程
   const pipelineConfig: WaveformPipelineConfig = {
     targetLength: 512,
-    samplingRate: 500,
+    samplingRate,
     restingBaseline,
     highPassCutoff: 20,
     adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
@@ -90,6 +94,7 @@ export function processReferenceWaveform(
     ch2: pipelineResult.processed.ch2,
     ch3: pipelineResult.processed.ch3,
     meta: {
+      samplingRate: pipelineResult.metadata.samplingRate,
       croppingMeta: {
         startIdx: pipelineResult.metadata.cropRange.startIdx,
         endIdx: pipelineResult.metadata.cropRange.endIdx,
@@ -105,6 +110,7 @@ export function processReferenceWaveform(
       },
       startupArtifactMeta: pipelineResult.metadata.startupArtifact,
       pipelineQualityScore: pipelineResult.metadata.qualityScore,
+      activityEvidence: pipelineResult.metadata.activityEvidence,
     },
   };
 }

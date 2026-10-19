@@ -13,16 +13,22 @@ import { computeFFT } from '@/lib/fft-analysis';
 import { EnhancedWaveformVisualization } from './EnhancedWaveformVisualization';
 import { emgDatabase } from '@/lib/db';
 import { toast } from 'sonner';
-import { calculateRestingStats } from '@/lib/resting-baseline-utils';
+import {
+  calculateRestingStats,
+  MAX_RESTING_BASELINE_SAMPLE_RATE,
+  MAX_RESTING_BASELINE_SAMPLES,
+  MIN_RESTING_BASELINE_SAMPLE_RATE,
+  MIN_RESTING_BASELINE_SAMPLES,
+  RESTING_BASELINE_CAPTURE_DURATION_MS,
+  SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES,
+} from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import {
   evaluateBaselineCapture,
   type BaselineCaptureSnapshot,
 } from '@/lib/baseline-capture-window';
-import { HARDWARE_CONFIG } from '@shared/hardware-config';
 
-const CAPTURE_DURATION_MS = 5_000;
-const MINIMUM_BASELINE_SAMPLES = 100;
+const CAPTURE_DURATION_MS = RESTING_BASELINE_CAPTURE_DURATION_MS;
 
 const emptyCaptureSnapshot: BaselineCaptureSnapshot = {
   elapsedMs: 0,
@@ -89,27 +95,25 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
     unsubscribeRef.current = null;
 
     const samplesCollected = waveformBufferRef.current.ch1.length;
-    const elapsedMs = Math.max(1, Date.now() - captureStartedAtRef.current);
-    const measuredSampleRate = samplesCollected / (elapsedMs / 1_000);
-    setCaptureSnapshot((current) => ({
-      ...current,
-      elapsedMs,
-      progress: Math.min(100, (elapsedMs / CAPTURE_DURATION_MS) * 100),
+    const now = Date.now();
+    const elapsedMs = Math.max(1, now - captureStartedAtRef.current);
+    const snapshot = evaluateBaselineCapture({
+      startedAt: captureStartedAtRef.current,
+      now,
+      durationMs: CAPTURE_DURATION_MS,
       sampleCount: samplesCollected,
-      measuredSampleRate,
-      status: samplesCollected === 0
-        ? 'no-data'
-        : samplesCollected < MINIMUM_BASELINE_SAMPLES
-          ? 'insufficient'
-          : 'complete',
-    }));
+      minimumSamples: MIN_RESTING_BASELINE_SAMPLES,
+      acceptedSampleRateRanges: SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES,
+    });
+    setCaptureSnapshot(snapshot);
+    const measuredSampleRate = snapshot.measuredSampleRate;
 
-    if (samplesCollected < MINIMUM_BASELINE_SAMPLES) {
+    if (snapshot.status !== 'complete') {
       if (samplesCollected === 0) {
         toast.error('未收到任何有效串口帧。请确认设备持续发送数据后重试。');
       } else {
         toast.error(
-          `静息基线仅收到 ${samplesCollected} 个样本（约 ${Math.round(measuredSampleRate)} Hz），至少需要 ${MINIMUM_BASELINE_SAMPLES} 个。`
+          `静息基线收到 ${samplesCollected} 帧（实际约 ${Math.round(measuredSampleRate)} Hz），支持 ${MIN_RESTING_BASELINE_SAMPLE_RATE}–${MAX_RESTING_BASELINE_SAMPLE_RATE} Hz 或 ${SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES[1].min}–${SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES[1].max} Hz；5 秒对应约 ${MIN_RESTING_BASELINE_SAMPLES}–${MAX_RESTING_BASELINE_SAMPLES} 帧或 ${MIN_RESTING_BASELINE_SAMPLES * 2}–${MAX_RESTING_BASELINE_SAMPLES * 2} 帧。请检查设备采样率后重录。`
         );
       }
       return;
@@ -118,7 +122,7 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
     // 计算基准特征
     let spectrum = { dominantFrequency: 0, snr: 0 };
     try {
-      spectrum = computeFFT(waveformBufferRef.current.ch2, HARDWARE_CONFIG.SAMPLE_RATE);
+      spectrum = computeFFT(waveformBufferRef.current.ch2, measuredSampleRate);
     } catch (err) {
       console.error('频谱计算失败:', err);
     }
@@ -140,6 +144,8 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
       snr: spectrum.snr,
       capturedAt: restingStats.capturedAt,
       samplesCollected: restingStats.samplesCollected,
+      captureDurationMs: elapsedMs,
+      measuredSampleRate,
       restingBaseline,
     };
 
@@ -194,7 +200,8 @@ export function ElectrodeBaselineCapture({ onComplete }: ElectrodeBaselineCaptur
         now: Date.now(),
         durationMs: CAPTURE_DURATION_MS,
         sampleCount: waveformBufferRef.current.ch1.length,
-        minimumSamples: MINIMUM_BASELINE_SAMPLES,
+        minimumSamples: MIN_RESTING_BASELINE_SAMPLES,
+        acceptedSampleRateRanges: SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES,
       });
       setCaptureSnapshot(snapshot);
       if (snapshot.status !== 'collecting') handleStopCapture();

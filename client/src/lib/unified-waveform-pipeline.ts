@@ -14,6 +14,7 @@ import {
   suppressStartupArtifactMultiChannel,
   type StartupArtifactMetadata,
 } from './startup-artifact-suppression';
+import { calculateActivityEvidence, type ActivityEvidence } from './temporal-burst-recognition';
 
 export interface WaveformPipelineConfig {
   /** 目标长度（样本数） */
@@ -44,6 +45,8 @@ export interface WaveformPipelineResult {
   };
   /** 处理元数据 */
   metadata: {
+    /** 实际处理时传入的原始帧率（Hz）；物理时长必须由它计算。 */
+    samplingRate: number;
     /** 原始长度 */
     originalLength: number;
     /** 滤波后长度 */
@@ -60,6 +63,8 @@ export interface WaveformPipelineResult {
     qualityScore: number;
     /** 启动瞬态检测和处理结果 */
     startupArtifact: StartupArtifactMetadata;
+    /** 裁剪、幅度归一化前的动作强度与静息基线对比 */
+    activityEvidence: ActivityEvidence;
     /** 处理步骤日志 */
     steps: string[];
   };
@@ -78,10 +83,18 @@ export function processWaveformUnified(
 ): WaveformPipelineResult {
   const steps: string[] = [];
   const originalLength = waveform.ch1.length;
+  const processingRate = Number.isFinite(config.samplingRate) && config.samplingRate > 0
+    ? config.samplingRate
+    : 500;
 
   try {
     // ========== 步骤1：滤波降噪 ==========
     steps.push('开始滤波降噪');
+    const activityEvidence = calculateActivityEvidence(
+      waveform.ch2,
+      config.restingBaseline?.ch2,
+      processingRate
+    );
 
     let filtered = waveform;
     let filteredLength = originalLength;
@@ -93,7 +106,7 @@ export function processWaveformUnified(
         waveform.ch2,
         waveform.ch3,
         config.restingBaseline,
-        config.samplingRate || 500
+        processingRate
       );
       filteredLength = filtered.ch1.length;
       steps.push(`滤波完成: ${originalLength} → ${filteredLength} 样本`);
@@ -104,7 +117,7 @@ export function processWaveformUnified(
         waveform.ch2,
         waveform.ch3,
         undefined,
-        config.samplingRate || 500
+        processingRate
       );
       filteredLength = filtered.ch1.length;
       steps.push('滤波完成（仅基本滤波）');
@@ -113,7 +126,7 @@ export function processWaveformUnified(
     // 启动伪迹必须在裁剪前处理，避免其主导有效区间和后续缩放。
     const startupArtifactResult = suppressStartupArtifactMultiChannel(
       filtered,
-      config.samplingRate || 500
+      processingRate
     );
     filtered = startupArtifactResult.cleaned;
     const startupArtifact = startupArtifactResult.metadata;
@@ -123,16 +136,19 @@ export function processWaveformUnified(
     steps.push('开始自适应裁剪空白部分');
 
     // 使用自适应裁剪算法
+    // The crop options were calibrated at 500 Hz. Scale sample counts to keep
+    // the same physical analysis window, minimum action, and retained margins.
+    const cropSampleScale = processingRate / 500;
     const adaptiveCropResult = adaptiveCropMultiChannel(
       filtered.ch1,
       filtered.ch2,
       filtered.ch3,
       {
-        windowSize: 50,
+        windowSize: Math.max(1, Math.round(50 * cropSampleScale)),
         noisePercentile: 25,
         thresholdMultiplier: 2.0,
-        minSegmentLength: 100,
-        preserveMargin: 20,
+        minSegmentLength: Math.max(1, Math.round(100 * cropSampleScale)),
+        preserveMargin: Math.max(1, Math.round(20 * cropSampleScale)),
       }
     );
 
@@ -212,6 +228,7 @@ export function processWaveformUnified(
     return {
       processed: scaleResult.scaled,
       metadata: {
+        samplingRate: config.samplingRate,
         originalLength,
         filteredLength,
         croppedLength,
@@ -220,6 +237,7 @@ export function processWaveformUnified(
         scaleFactor: scaleResult.scaleFactor,
         qualityScore,
         startupArtifact,
+        activityEvidence,
         steps,
       },
     };
@@ -231,6 +249,7 @@ export function processWaveformUnified(
     return {
       processed: waveform,
       metadata: {
+        samplingRate: config.samplingRate,
         originalLength,
         filteredLength: originalLength,
         croppedLength: originalLength,
@@ -246,6 +265,7 @@ export function processWaveformUnified(
           stabilizationIndex: null,
           reason: '处理流程异常，无法判断启动伪迹',
         },
+        activityEvidence: calculateActivityEvidence([], undefined, processingRate),
         steps,
       },
     };

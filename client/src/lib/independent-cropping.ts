@@ -155,6 +155,9 @@ export interface CroppingAndNormalizationMeta {
   };
   startupArtifactMeta?: import('./startup-artifact-suppression').StartupArtifactMetadata;
   pipelineQualityScore?: number;
+  activityEvidence?: import('./temporal-burst-recognition').ActivityEvidence;
+  /** Measured decoded-frame rate used to process this capture. */
+  samplingRate?: number;
 }
 
 export interface ProcessedWaveform {

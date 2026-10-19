@@ -39,12 +39,7 @@ export function computeFFT(
   // 计算 FFT
   const fft = new FFT(fftSize);
   const spectrum = fft.createComplexArray();
-  for (let i = 0; i < fftSize; i++) {
-    spectrum[2 * i] = windowedSignal[i];
-    spectrum[2 * i + 1] = 0;
-  }
-
-  (fft as any).forward(spectrum);
+  fft.realTransform(spectrum, windowedSignal);
 
   // 计算幅度谱
   const magnitudes: number[] = [];
