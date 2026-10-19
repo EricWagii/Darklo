@@ -50,6 +50,26 @@ describe('complete EMG diagnostic exports', () => {
     expect(payload.trials[0].result).not.toHaveProperty('processedWaveform');
   });
 
+  it('retains the measured rate on a failed recognition trial', () => {
+    const payload = buildRecognitionDiagnosticPackage({
+      trials: [{
+        trialId: 'dropped-frames',
+        startedAt: 0,
+        endedAt: 1_000,
+        measuredSampleRate: 300,
+        rawWaveform: { ch1: [1], ch2: [2], ch3: [3], timestamps: [0] },
+        status: 'failed',
+        failureReason: '帧率不足',
+      }],
+      commands: [],
+      sampleRate: 1_000,
+    });
+
+    expect(payload.sampleRate).toBe(1_000);
+    expect(payload.trials[0].measuredSampleRate).toBe(300);
+    expect(payload.trials[0].status).toBe('failed');
+  });
+
   it('keeps continuous sample columns aligned and reports truncation explicitly', () => {
     let capture = createContinuousSampleCapture(2);
     capture = appendContinuousSample(capture, {

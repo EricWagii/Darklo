@@ -19,6 +19,12 @@ import {
   getCollectionCommandBatchConflict,
   normalizeCollectionCommandName,
 } from './collection-command-session';
+import {
+  assessTrainingCollections,
+  describeTrainingRejections,
+  type TrainingCollectionLike,
+} from './training-sample-usability';
+import { assessCaptureBaselineCompatibility } from './capture-frame-rate';
 
 export interface CollectionHandlerConfig {
   commandName: string;
@@ -88,6 +94,40 @@ export function buildPersistedCollectionRecord(params: {
   };
 }
 
+function describeContinuedCollectionConflict(
+  existingCollections: readonly TrainingCollectionLike[] | undefined,
+  additions: readonly TrainingCollectionLike[]
+): string | null {
+  const additionRates = additions.map((collection) => collection.pipelineMetadata?.samplingRate);
+  const minimumRate = Math.min(...additionRates.map((rate) => rate ?? Number.NaN));
+  const maximumRate = Math.max(...additionRates.map((rate) => rate ?? Number.NaN));
+  if (!assessCaptureBaselineCompatibility(maximumRate, minimumRate).compatible) {
+    return '本批训练样本采样档位不一致或实收帧率偏差超过 20%，请在同一设备采样档位重新采集后保存';
+  }
+
+  // Recognition excludes templates from a different device-rate band. Apply
+  // the same rate boundary before checking old-vs-new rhythm consistency.
+  const matchingExisting = (existingCollections || []).filter((collection) =>
+    additionRates.every((rate) => assessCaptureBaselineCompatibility(
+      collection.pipelineMetadata?.samplingRate ?? null,
+      rate
+    ).compatible)
+  );
+  const existingUsable = assessTrainingCollections(matchingExisting).usableCollections;
+  if (existingUsable.length === 0) return null;
+
+  const combined = assessTrainingCollections([...existingUsable, ...additions]);
+  if (combined.rejected.length === 0) return null;
+
+  const rejectedAdditions = combined.rejected
+    .filter(({ index }) => index >= existingUsable.length)
+    .map(({ index, reasons }) => ({ index: index - existingUsable.length, reasons }));
+  if (rejectedAdditions.length > 0) {
+    return `继续采集会使同一指令的动作次数不一致。${describeTrainingRejections(rejectedAdditions)}`;
+  }
+  return '继续采集会使已有模板的动作次数失去稳定多数，无法建立节律模型。请删除节律不同的新增样本或重录';
+}
+
 /**
  * 处理采集完成
  */
@@ -134,6 +174,21 @@ export async function handleCompleteCollectionV2(
         success: false,
         message: `${isExistingCommand ? '继续采集' : '新指令'}至少需要 ${minCollections} 条数据`
       };
+    }
+
+    const trainingAssessment = assessTrainingCollections(collectionHistory);
+    if (trainingAssessment.rejected.length > 0) {
+      return {
+        success: false,
+        message: describeTrainingRejections(trainingAssessment.rejected),
+      };
+    }
+    const continuedConflict = describeContinuedCollectionConflict(
+      existingCmd?.collections,
+      collectionHistory
+    );
+    if (continuedConflict) {
+      return { success: false, message: continuedConflict };
     }
 
     logger.log('=== 开始采集完成处理 ===');
@@ -257,7 +312,7 @@ export async function handleCompleteCollectionV2(
 累计采集：${mergedCollections.length} 条
 归一化时长：${durationMs.toFixed(0)}ms
 
-✓ 所有采集已自动处理，数据质量已保证。`;
+✓ 本批样本已通过训练可用性检查，识别效果仍需实际测试。`;
 
     logger.log(`指令 "${commandName}" 保存成功`);
     operationLogger.log('info', 'Collection', `指令 "${commandName}" 保存成功: 本次新增 ${collectionsToSave.length} 条，累计 ${mergedCollections.length} 条`);
@@ -324,10 +379,38 @@ export async function handleSaveAfterAnomalyRemoval(
       };
     }
 
+    const trainingAssessment = assessTrainingCollections(
+      filteredWaveforms.map((waveform, index) => ({
+        waveform: { ch1: waveform.ch1, ch2: waveform.ch2, ch3: waveform.ch3 },
+        preprocessingMeta: filteredSources[index]?.preprocessingMeta,
+        pipelineMetadata: filteredSources[index]?.pipelineMetadata,
+      }))
+    );
+    if (trainingAssessment.rejected.length > 0) {
+      return {
+        success: false,
+        message: describeTrainingRejections(trainingAssessment.rejected),
+      };
+    }
+
     logger.log(`删除 ${indicesToRemove.length} 条异常波形后，剩余 ${filteredWaveforms.length} 条`);
 
     // 准备保存数据
     const existingCommand = await emgDatabase.getCommand(commandName);
+    const minCollections = existingCommand ? 1 : 5;
+    if (filteredWaveforms.length < minCollections) {
+      return {
+        success: false,
+        message: `${existingCommand ? '继续采集' : '新指令'}至少需要 ${minCollections} 条数据`,
+      };
+    }
+    const continuedConflict = describeContinuedCollectionConflict(
+      existingCommand?.collections,
+      filteredSources
+    );
+    if (continuedConflict) {
+      return { success: false, message: continuedConflict };
+    }
     const nextIndex = existingCommand?.collections?.length || 0;
 
     const collectionsToSave = filteredWaveforms.map((wf, idx) =>

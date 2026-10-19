@@ -14,6 +14,8 @@ export interface RecognitionDiagnosticTrial {
   trialId: string;
   startedAt: number;
   endedAt?: number;
+  /** Decoded frames divided by this trial's wall-clock capture duration, including rejected trials. */
+  measuredSampleRate?: number | null;
   rawWaveform: RecognitionRawWaveform;
   processedWaveform?: ThreeChannelWaveform & { meta?: unknown };
   result?: Record<string, unknown>;

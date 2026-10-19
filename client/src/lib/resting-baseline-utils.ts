@@ -1,3 +1,19 @@
+import { HARDWARE_CONFIG } from '@shared/hardware-config';
+
+export const RESTING_BASELINE_CAPTURE_DURATION_MS = 5_000;
+export const MIN_RESTING_BASELINE_SAMPLE_RATE = HARDWARE_CONFIG.SAMPLE_RATE * 0.8;
+export const MAX_RESTING_BASELINE_SAMPLE_RATE = HARDWARE_CONFIG.SAMPLE_RATE * 1.2;
+export const MIN_RESTING_BASELINE_SAMPLES = Math.ceil(
+  MIN_RESTING_BASELINE_SAMPLE_RATE * RESTING_BASELINE_CAPTURE_DURATION_MS / 1_000
+);
+export const MAX_RESTING_BASELINE_SAMPLES = Math.floor(
+  MAX_RESTING_BASELINE_SAMPLE_RATE * RESTING_BASELINE_CAPTURE_DURATION_MS / 1_000
+);
+export const SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES = [
+  { min: HARDWARE_CONFIG.SAMPLE_RATE * 0.8, max: HARDWARE_CONFIG.SAMPLE_RATE * 1.2 },
+  { min: HARDWARE_CONFIG.SAMPLE_RATE * 2 * 0.8, max: HARDWARE_CONFIG.SAMPLE_RATE * 2 * 1.2 },
+] as const;
+
 export interface RestingBaselineWaveform {
   ch1: number[];
   ch2: number[];
@@ -16,6 +32,8 @@ export interface RestingBaselineStats {
 }
 
 export interface RestingBaselineRecord extends Partial<RestingBaselineStats> {
+  captureDurationMs?: number;
+  measuredSampleRate?: number;
   restingBaseline?: RestingBaselineWaveform;
   baseline?: {
     ch1?: number;
@@ -55,11 +73,33 @@ export const calculateRestingStats = (waveform: RestingBaselineWaveform): Restin
   };
 };
 
-export const getRestingBaselineWaveform = (record: RestingBaselineRecord | null | undefined): RestingBaselineWaveform | undefined => {
+export const getRestingBaselineSampleRate = (record: RestingBaselineRecord | null | undefined): number | undefined => {
   if (!record?.restingBaseline) return undefined;
   const { ch1, ch2, ch3 } = record.restingBaseline;
   if (!Array.isArray(ch1) || !Array.isArray(ch2) || !Array.isArray(ch3)) return undefined;
-  if (ch1.length === 0 || ch2.length === 0 || ch3.length === 0) return undefined;
+  if (
+    ch1.length < MIN_RESTING_BASELINE_SAMPLES ||
+    ch2.length !== ch1.length || ch3.length !== ch1.length ||
+    !ch1.every(Number.isFinite) || !ch2.every(Number.isFinite) || !ch3.every(Number.isFinite)
+  ) return undefined;
+  const captureDurationMs = record.captureDurationMs;
+  if (
+    !Number.isFinite(captureDurationMs) ||
+    (captureDurationMs ?? 0) < RESTING_BASELINE_CAPTURE_DURATION_MS ||
+    !Number.isFinite(record.measuredSampleRate)
+  ) return undefined;
+  const measuredSampleRate = ch1.length / (captureDurationMs! / 1_000);
+  if (
+    Math.abs(measuredSampleRate - record.measuredSampleRate!) > Math.max(1, measuredSampleRate * 0.01) ||
+    !SUPPORTED_RESTING_BASELINE_SAMPLE_RATE_RANGES.some(({ min, max }) =>
+      measuredSampleRate >= min && measuredSampleRate <= max)
+  ) return undefined;
+  return measuredSampleRate;
+};
+
+export const getRestingBaselineWaveform = (record: RestingBaselineRecord | null | undefined): RestingBaselineWaveform | undefined => {
+  if (getRestingBaselineSampleRate(record) === undefined) return undefined;
+  const { ch1, ch2, ch3 } = record!.restingBaseline!;
   return { ch1, ch2, ch3 };
 };
 

@@ -34,11 +34,22 @@ import { detectValidSegment, cropWaveform } from '@/lib/dsp-processor';
 import { DebugPanel } from '@/components/DebugPanel';
 import { evaluateAllCollections, autoCropCollection, alignMultipleCollections } from '@/lib/auto-segmentation';
 import { alignMultipleCollectionsImproved, batchCropCollections } from '@/lib/improved-segmentation';
-import { alignMultipleCollectionsAfterPreprocessing } from '@/lib/preprocessing-aware-cropping';
 import { batchCropCollectionsFast, applyCropping } from '@/lib/fast-cropping-optimized';
 import { batchCropCollectionsMultiPeak, applyCropping as applyMultiPeakCropping } from '@/lib/multi-peak-detection';
 import { batchSimpleCroppingCompat, applyCroppingToWaveforms as applySimpleCropping } from '@/lib/simple-front-rear-cropping';
 import { processWaveformUnified, WaveformPipelineConfig } from '@/lib/unified-waveform-pipeline';
+import {
+  assessCaptureBaselineCompatibility,
+  assessCaptureFrameRate,
+  SUPPORTED_CAPTURE_RATE_DESCRIPTION,
+} from '@/lib/capture-frame-rate';
+import {
+  assessTrainingCollections,
+  describeTrainingRejections,
+  TRAINING_PIPELINE_VERSION,
+  trimTrainingCollection,
+  trimTrainingCollections,
+} from '@/lib/training-sample-usability';
 import type { StartupArtifactMetadata } from '@/lib/startup-artifact-suppression';
 import { integratedCroppingSystem } from '@/lib/integrated-cropping-system';
 import { anomalyDiscardSystem, generateUserPrompt } from '@/lib/anomaly-discard-system';
@@ -65,7 +76,10 @@ import { AnomalyPromptDialog, type AnomalyWaveform } from '@/components/AnomalyP
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { operationLogger } from '@/lib/operation-logger';
-import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
+import {
+  getRestingBaselineSampleRate,
+  getRestingBaselineWaveform,
+} from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import {
   isCollectionCommandInputLocked,
@@ -130,6 +144,11 @@ interface CollectionData {
   };
   pipelineMetadata?: {
     startupArtifact?: StartupArtifactMetadata;
+    samplingRate?: number;
+    croppedLength?: number;
+    finalLength?: number;
+    qualityScore?: number;
+    durationReliable?: boolean;
     filteringParams?: {
       highPassCutoff: number;
       adaptiveFilterParams?: { windowSize: number; mu: number };
@@ -144,7 +163,7 @@ interface CollectionData {
     };
   };
   preprocessingMeta?: {
-    pipelineVersion: 'resting-baseline-v1';
+    pipelineVersion: typeof TRAINING_PIPELINE_VERSION;
     restingBaselineCapturedAt?: string;
     requiresRestingBaseline: true;
   };
@@ -396,7 +415,7 @@ export default function CollectionMode() {
     }
   };
 
-  // 一键自动裁剪所有采集 - 使用预处理后裁剪（方案 B）
+  // 一键自动裁剪所有采集。模板已预处理并归一化为 512 点，直接在 CH2 上对齐。
   const handleAutoCropAll = () => {
     if (collectionHistory.length === 0) {
       setError('没有采集数据可裁剪');
@@ -404,16 +423,9 @@ export default function CollectionMode() {
     }
 
     try {
-      // 使用预处理后的对齐算法（方案 B）
-      // 这个算法会：
-      // 1. 对每个采集进行完整预处理（陷波、高通、ICA）
-      // 2. 计算三通道 SNR 权重
-      // 3. 融合三通道特征
-      // 4. 在融合信号上进行裁剪
-      // 5. 使用中位数对齐多个采集
-      const alignment = alignMultipleCollectionsAfterPreprocessing(
-        collectionHistory.map((col) => col.waveform),
-        SAMPLE_RATE  // 采样率 500Hz
+      // 这些波形已由统一管线处理；重新按某个固定 Hz 滤波会破坏模板。
+      const alignment = alignMultipleCollectionsImproved(
+        collectionHistory.map((col) => col.waveform)
       );
 
       // 检查裁剪结果是否有效
@@ -422,32 +434,28 @@ export default function CollectionMode() {
         return;
       }
 
-      // 裁剪所有采集
-      const croppedHistory = collectionHistory.map((col) => ({
+      // 对每条样本执行同一裁剪，并统一重采样；任一条失去动作则整批不应用。
+      const batchTrim = trimTrainingCollections(
+        collectionHistory,
+        alignment.startIdx,
+        alignment.endIdx
+      );
+      if (!batchTrim.collections) {
+        setError(batchTrim.error || '自动裁剪未应用，请检查每条采集的动作范围');
+        return;
+      }
+
+      const croppedHistory = batchTrim.collections.map((col) => ({
         ...col,
-        waveform: {
-          ch1: col.waveform.ch1.slice(alignment.startIdx, alignment.endIdx),
-          ch2: col.waveform.ch2.slice(alignment.startIdx, alignment.endIdx),
-          ch3: col.waveform.ch3.slice(alignment.startIdx, alignment.endIdx),
-        },
         trimStart: alignment.startIdx,
         trimEnd: alignment.endIdx,
       }));
 
-      // 检查裁剪后的数据是否有效
-      const validCrops = croppedHistory.filter((col) => col.waveform.ch2.length > 10);
-      if (validCrops.length === 0) {
-        setError('裁剪后没有有效数据，请重新采集');
-        return;
-      }
-
-      setCollectionHistory(validCrops);
-      setCollectionCount(validCrops.length);
+      setCollectionHistory(croppedHistory);
+      setCollectionCount(croppedHistory.length);
       setError(null);
       
-      // 显示详细的裁剪结果
-      const snrInfo = `SNR权重 - CH1: ${(alignment.snrWeights.ch1 * 100).toFixed(1)}%, CH2: ${(alignment.snrWeights.ch2 * 100).toFixed(1)}%, CH3: ${(alignment.snrWeights.ch3 * 100).toFixed(1)}%`;
-      alert(`✓ 已使用预处理后裁剪算法\n裁剪数据: ${validCrops.length}/${collectionHistory.length}\n有效片段比例: ${(alignment.confidence * 100).toFixed(1)}%\n${snrInfo}`);
+      alert(`✓ 已对已处理波形直接对齐裁剪\n裁剪数据: ${croppedHistory.length}/${collectionHistory.length}\n有效片段比例: ${(alignment.confidence * 100).toFixed(1)}%`);
     } catch (err) {
       console.error('自动裁剪失败:', err);
       setError(`自动裁剪失败: ${err instanceof Error ? err.message : '未知错误'}`);
@@ -541,7 +549,7 @@ export default function CollectionMode() {
     }
 
     if (!getRestingBaselineWaveform(globalElectrodeBaseline)) {
-      setError('请先采集静息基线，再开始采集训练');
+      setError(`请先重录静息基线：需采集 5 秒，实收帧率为 ${SUPPORTED_CAPTURE_RATE_DESCRIPTION}；旧基线不符不能用于训练`);
       return;
     }
 
@@ -615,9 +623,26 @@ export default function CollectionMode() {
       return;
     }
 
+    const frameRateAssessment = assessCaptureFrameRate(
+      capturedWaveform.ch1.length,
+      capturedDuration
+    );
+    if (!frameRateAssessment.acceptable) {
+      setError(frameRateAssessment.message);
+      return;
+    }
+
     const restingBaseline = getRestingBaselineWaveform(globalElectrodeBaseline);
     if (!restingBaseline) {
-      setError('缺少静息基线，本次采集未处理。请先采集静息基线后重试');
+      setError(`静息基线帧数或帧率不符，本次采集未处理。请重录 5 秒、${SUPPORTED_CAPTURE_RATE_DESCRIPTION} 的静息基线`);
+      return;
+    }
+    const baselineCompatibility = assessCaptureBaselineCompatibility(
+      frameRateAssessment.measuredHz,
+      getRestingBaselineSampleRate(globalElectrodeBaseline)
+    );
+    if (!baselineCompatibility.compatible) {
+      setError(baselineCompatibility.message);
       return;
     }
 
@@ -630,7 +655,7 @@ export default function CollectionMode() {
     // 执行统一的波形处理流程：滤波降噪 -> 裁剪空白 -> 统一缩放
     const pipelineConfig: WaveformPipelineConfig = {
       targetLength: FIXED_WAVEFORM_LENGTH || 512,
-      samplingRate: SAMPLE_RATE || 500,
+      samplingRate: frameRateAssessment.measuredHz!,
       restingBaseline,
       highPassCutoff: 20,
       adaptiveFilterParams: { windowSize: 50, mu: 0.01 },
@@ -667,14 +692,14 @@ export default function CollectionMode() {
       },
       pipelineMetadata: pipelineResult.metadata,
       preprocessingMeta: {
-        pipelineVersion: 'resting-baseline-v1',
+        pipelineVersion: TRAINING_PIPELINE_VERSION,
         restingBaselineCapturedAt: globalElectrodeBaseline?.capturedAt,
         requiresRestingBaseline: true,
       },
     };
 
     // 添加详细的波形诊断日志
-    const rawDurationMs = (capturedWaveform.ch1.length / 500) * 1000;
+    const rawDurationMs = (capturedWaveform.ch1.length / frameRateAssessment.measuredHz!) * 1000;
     console.log(`[采集 #${newCollection.index}] 原始波形长度: ${capturedWaveform.ch1.length} 样本 (${rawDurationMs.toFixed(0)}ms)`);
     console.log(`[采集 #${newCollection.index}] 计时器时长: ${capturedDuration}ms`);
     console.log(`[采集 #${newCollection.index}] 指令: ${capturedCommandName}`);
@@ -687,7 +712,10 @@ export default function CollectionMode() {
     setCommandName(capturedCommandName);
     setCurrentWaveform({ ch1: [], ch2: [], ch3: [] });
     setCollectionTime(0);
-    setError(null);
+    const captureAssessment = assessTrainingCollections([newCollection]);
+    setError(captureAssessment.rejected.length > 0
+      ? describeTrainingRejections(captureAssessment.rejected)
+      : null);
 
     // 自动显示裁剪 UI
     setShowTrimUI(true);
@@ -702,23 +730,22 @@ export default function CollectionMode() {
   // 应用裁剪
   const handleApplyTrim = () => {
     if (!pendingWaveform) return;
-
-    const croppedWaveform = {
-      ch1: pendingWaveform.waveform.ch1.slice(trimStart, trimEnd),
-      ch2: pendingWaveform.waveform.ch2.slice(trimStart, trimEnd),
-      ch3: pendingWaveform.waveform.ch3.slice(trimStart, trimEnd),
-    };
+    const trimmed = trimTrainingCollection(pendingWaveform, trimStart, trimEnd);
+    if (!trimmed.collection) {
+      setError(trimmed.error || '裁剪后的波形不可用于识别，请调整裁剪范围');
+      return;
+    }
 
     // 更新历史记录
     const updated = [...collectionHistory];
     updated[updated.length - 1] = {
-      ...pendingWaveform,
-      waveform: croppedWaveform,
+      ...trimmed.collection,
       trimStart,
       trimEnd,
     };
 
     setCollectionHistory(updated);
+    setError(null);
     setShowTrimUI(false);
     setPendingWaveform(null);
   };
@@ -763,7 +790,7 @@ export default function CollectionMode() {
           logger,
           operationLogger,
           FIXED_WAVEFORM_LENGTH,
-          SAMPLE_RATE
+          SAMPLE_RATE: collectionHistory[0]?.pipelineMetadata?.samplingRate ?? SAMPLE_RATE
         },
         pendingCollections,
         indicesToDelete
@@ -841,7 +868,7 @@ export default function CollectionMode() {
         logger,
         operationLogger,
         FIXED_WAVEFORM_LENGTH,
-        SAMPLE_RATE
+        SAMPLE_RATE: collectionHistory[0]?.pipelineMetadata?.samplingRate ?? SAMPLE_RATE
       });
 
       if (!result.success) {
@@ -1424,6 +1451,14 @@ export default function CollectionMode() {
   // 执行保存，不进行异常检测
   const performSaveWithoutAnomalyDetection = async (collectionsToSave: CollectionData[]) => {
     try {
+      const trainingAssessment = assessTrainingCollections(collectionsToSave);
+      if (trainingAssessment.rejected.length > 0) {
+        const message = describeTrainingRejections(trainingAssessment.rejected);
+        setError(message);
+        toast.error(message);
+        return;
+      }
+
       if (!currentUser) {
         logger.error('用户未登录');
         toast.error('请先登录');

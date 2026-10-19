@@ -33,12 +33,14 @@ import { calculateCollectionQuality, calculateQualityWeightedSimilarity } from '
 import { emgDatabase } from '@/lib/db';
 import { submitUserFeedback, calculatePerformanceMetrics } from '@/lib/model-feedback-system';
 import { processTestWaveform, processReferenceWaveform, extractAndFuseFeatures, calculateFeatureSimilarity, getProcessingStatusDescription, isProcessingAcceptable, type ProcessedWaveform } from '@/lib/recognition-processing';
-import { evaluateAllCollectionsImproved } from '@/lib/quality-scoring-improved';
 import type { StartupArtifactMetadata } from '@/lib/startup-artifact-suppression';
 import { adaptiveFilterMultiChannel } from '@/lib/adaptive-waveform-filtering';
 import { FIXED_WAVEFORM_LENGTH } from '@shared/instruction-length-spec';
 import { showRecognitionCroppingToast } from '@/lib/cropping-completion-toast';
-import { getRestingBaselineWaveform } from '@/lib/resting-baseline-utils';
+import {
+  getRestingBaselineSampleRate,
+  getRestingBaselineWaveform,
+} from '@/lib/resting-baseline-utils';
 import { setEmgRuntimeBusy } from '@/lib/emg-runtime-state';
 import { dataChangeEventManager, DataChangeEventType } from '@/lib/data-change-events';
 import {
@@ -48,10 +50,25 @@ import {
 } from '@/lib/emg-diagnostic-export';
 import { HARDWARE_CONFIG } from '@shared/hardware-config';
 import {
+  assessTestBurstActivity,
   buildTemporalBurstModel,
   recognizeTemporalBurst,
   type TemporalBurstFeatures,
 } from '@/lib/temporal-burst-recognition';
+import {
+  assessCaptureBaselineCompatibility,
+  assessCaptureFrameRate,
+  SUPPORTED_CAPTURE_RATE_DESCRIPTION,
+} from '@/lib/capture-frame-rate';
+import {
+  getTestCaptureDurationSeconds,
+  getTrainingCaptureDurationSeconds,
+} from '@/lib/recognition-capture-duration';
+import {
+  assessRecognitionCollectionsForBaseline,
+  formatTrainingExclusions,
+  summarizeRecognitionTraining,
+} from '@/lib/recognition-readiness';
 
 interface RecognitionResult {
   historyId?: string;
@@ -119,6 +136,9 @@ interface StoredCommand {
       requiresRestingBaseline?: boolean;
     };
     pipelineMetadata?: {
+      croppedLength?: number;
+      durationReliable?: boolean;
+      samplingRate?: number;
       qualityScore?: number;
       startupArtifact?: StartupArtifactMetadata;
     };
@@ -161,13 +181,6 @@ const isValidSerialSample = (data: any): boolean => {
   return Number.isFinite(data?.channel1) &&
     Number.isFinite(data?.channel2) &&
     Number.isFinite(data?.channel3);
-};
-
-const isCollectionPreprocessedWithRestingBaseline = (collection: StoredCommand['collections'][number]): boolean => {
-  return Boolean(
-    collection.preprocessingMeta?.pipelineVersion === 'resting-baseline-v1' &&
-    collection.preprocessingMeta?.requiresRestingBaseline
-  );
 };
 
 interface FeatureNormalizer {
@@ -282,38 +295,56 @@ export default function RecognitionMode() {
   const [cnnModelLoaded, setCNNModelLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedCommands, setSavedCommands] = useState<StoredCommand[]>([]);
+  const [globalElectrodeBaseline, setGlobalElectrodeBaseline] = useState<any>(null);
+  const baselineSampleRate = getRestingBaselineSampleRate(globalElectrodeBaseline);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.7);
 
-  const compatibleCommands = useMemo(() => savedCommands
-    .map((cmd) => {
-      const baselineCompatible = cmd.collections.filter((collection) =>
-        isCollectionPreprocessedWithRestingBaseline(collection)
-      );
-      const usabilityScores = evaluateAllCollectionsImproved(
-        baselineCompatible.map((collection) => ({
-          ...collection.waveform,
-          startupArtifactMeta: collection.pipelineMetadata?.startupArtifact,
-        }))
-      );
+  const assessedCommands = useMemo(() => savedCommands.map((cmd) => ({
+    command: cmd,
+    assessment: assessRecognitionCollectionsForBaseline(cmd.collections, baselineSampleRate),
+  })), [savedCommands, baselineSampleRate]);
 
-      return {
-        ...cmd,
-        collections: baselineCompatible.filter((collection, index) => (
-          usabilityScores[index]?.detectedBurstCount > 0 &&
-          usabilityScores[index]?.activityClarity >= 20 &&
-          usabilityScores[index]?.artifactResistance >= 30 &&
-          collection.pipelineMetadata?.startupArtifact?.ambiguous !== true
-        )),
-      };
-    })
-    .filter((cmd) => cmd.collections.length > 0), [savedCommands]);
+  const compatibleCommands = useMemo(() => assessedCommands
+    .map(({ command, assessment }) => ({
+      ...command,
+      collections: assessment.usableCollections,
+    }))
+    .filter((cmd) => cmd.collections.length > 0), [assessedCommands]);
+
+  const rejectedTrainingSampleCount = useMemo(() => assessedCommands.reduce(
+    (count, { assessment }) => count + assessment.rejected.length,
+    0
+  ), [assessedCommands]);
+
+  const trainingExclusionDetails = useMemo(() => formatTrainingExclusions(
+    assessedCommands.map(({ command, assessment }) => ({
+      commandName: command.name,
+      rejected: assessment.rejected,
+    }))
+  ), [assessedCommands]);
 
   const temporalBurstModel = useMemo(() => buildTemporalBurstModel(
     compatibleCommands.map((cmd) => ({
       name: cmd.name,
       signals: cmd.collections.map((collection) => collection.waveform.ch2),
+      captureDurationsSeconds: cmd.collections.map(getTrainingCaptureDurationSeconds),
     }))
   ), [compatibleCommands]);
+
+  const trainingStatus = useMemo(() => {
+    if (!baselineSampleRate) {
+      return {
+        canStart: false,
+        message: `请先采集 5 秒、实收帧率为 ${SUPPORTED_CAPTURE_RATE_DESCRIPTION} 的静息基线`,
+      };
+    }
+    return summarizeRecognitionTraining({
+      savedCommandCount: savedCommands.length,
+      usableCommandCount: compatibleCommands.length,
+      temporalModelApplicable: temporalBurstModel.applicable,
+      temporalModelReason: temporalBurstModel.reason,
+    });
+  }, [baselineSampleRate, savedCommands.length, compatibleCommands.length, temporalBurstModel]);
 
   const amplitudeNormalizer = useMemo(() => buildFeatureNormalizer(
     compatibleCommands.flatMap((cmd) =>
@@ -409,7 +440,6 @@ export default function RecognitionMode() {
   // 电极检测状态
   const [showElectrodeCheck, setShowElectrodeCheck] = useState(false);
   const [electrodeCheckResult, setElectrodeCheckResult] = useState<any>(null);
-  const [globalElectrodeBaseline, setGlobalElectrodeBaseline] = useState<any>(null);
   
   // 反馈面板状态
   const [showFeedback, setShowFeedback] = useState(false);
@@ -656,21 +686,13 @@ export default function RecognitionMode() {
       return;
     }
 
-    if (savedCommands.length === 0) {
-      setError('请先完成采集训练');
+    if (!trainingStatus.canStart) {
+      setError(trainingStatus.message);
       return;
     }
 
     if (!getRestingBaselineWaveform(globalElectrodeBaseline)) {
-      setError('请先采集静息基线，再开始默念测试');
-      return;
-    }
-
-    const hasRestingPreprocessedTrainingData = savedCommands.some((cmd) =>
-      cmd.collections.some((collection) => isCollectionPreprocessedWithRestingBaseline(collection))
-    );
-    if (!hasRestingPreprocessedTrainingData) {
-      setError('没有可用的静息基线预处理训练样本。请在采集训练页重新采集并保存指令数据');
+      setError(`请先重录静息基线：需采集 5 秒，实收帧率为 ${SUPPORTED_CAPTURE_RATE_DESCRIPTION}；旧基线不符不能用于测试`);
       return;
     }
 
@@ -718,6 +740,7 @@ export default function RecognitionMode() {
   // 停止识别
   const handleStopRecognition = async () => {
     if (recognitionProcessingRef.current) return;
+    const captureEndedAt = Date.now();
     recognitionProcessingRef.current = true;
     setIsProcessingRecognition(true);
 
@@ -734,11 +757,20 @@ export default function RecognitionMode() {
     await yieldToBrowser();
 
     try {
-    updateActiveDiagnosticTrial({ endedAt: Date.now(), status: 'completed' });
+    const activeTrial = recognitionTrialsRef.current.find(
+      (trial) => trial.trialId === activeDiagnosticTrialIdRef.current
+    );
+    updateActiveDiagnosticTrial({ endedAt: captureEndedAt, status: 'completed' });
     setRecognitionDiagnosticCount(recognitionTrialsRef.current.length);
 
     const sampleCount = waveformBufferRef.current.ch1.length;
     console.log(`[识别] 停止识别，采集到 ${sampleCount} 个有效样本`);
+
+    const frameRateAssessment = assessCaptureFrameRate(
+      sampleCount,
+      activeTrial ? captureEndedAt - activeTrial.startedAt : Number.NaN
+    );
+    updateActiveDiagnosticTrial({ measuredSampleRate: frameRateAssessment.measuredHz });
 
     if (sampleCount < MIN_RECOGNITION_SAMPLES) {
       const lastSampleText = lastRecognitionSampleAtRef.current
@@ -764,12 +796,47 @@ export default function RecognitionMode() {
       return;
     }
 
+    if (!frameRateAssessment.acceptable) {
+      const errorMsg = frameRateAssessment.message;
+      setError(errorMsg);
+      updateActiveDiagnosticTrial({
+        status: 'failed',
+        failureReason: errorMsg,
+        result: { predictedCommand: '无法识别', confidence: 0, processingStatus: errorMsg },
+      });
+      addRecognitionHistoryRecord({
+        timestamp: new Date(),
+        command: '无法识别',
+        confidence: 0,
+        allScores: [],
+        processingStatus: errorMsg,
+      });
+      return;
+    }
+
     // 识别
     if (sampleCount > 0) {
       let result: RecognitionResult;
       const restingBaseline = getRestingBaselineWaveform(globalElectrodeBaseline);
       if (!restingBaseline) {
-        const errorMsg = '缺少静息基线，本次识别未处理。请先采集静息基线后重试';
+        const errorMsg = `静息基线帧数或帧率不符，本次识别未处理。请重录 5 秒、${SUPPORTED_CAPTURE_RATE_DESCRIPTION} 的静息基线`;
+        setError(errorMsg);
+        updateActiveDiagnosticTrial({ status: 'failed', failureReason: errorMsg });
+        addRecognitionHistoryRecord({
+          timestamp: new Date(),
+          command: '无法识别',
+          confidence: 0,
+          allScores: [],
+          processingStatus: errorMsg,
+        });
+        return;
+      }
+      const baselineCompatibility = assessCaptureBaselineCompatibility(
+        frameRateAssessment.measuredHz,
+        getRestingBaselineSampleRate(globalElectrodeBaseline)
+      );
+      if (!baselineCompatibility.compatible) {
+        const errorMsg = baselineCompatibility.message;
         setError(errorMsg);
         updateActiveDiagnosticTrial({ status: 'failed', failureReason: errorMsg });
         addRecognitionHistoryRecord({
@@ -782,7 +849,7 @@ export default function RecognitionMode() {
         return;
       }
       if (compatibleCommands.length === 0) {
-        const errorMsg = '没有可用的静息基线预处理训练样本。请重新采集训练数据后再测试';
+        const errorMsg = trainingStatus.message;
         setError(errorMsg);
         updateActiveDiagnosticTrial({ status: 'failed', failureReason: errorMsg });
         addRecognitionHistoryRecord({
@@ -800,14 +867,15 @@ export default function RecognitionMode() {
         waveformBufferRef.current.ch1,
         waveformBufferRef.current.ch2,
         waveformBufferRef.current.ch3,
-        restingBaseline
+        restingBaseline,
+        frameRateAssessment.measuredHz!
       );
 
       // 显示处理完成提示
       const originalLength = waveformBufferRef.current.ch1.length;
       // 获取裁剪后但未缩放的长度
       const croppingMeta = processedWaveform.meta.croppingMeta;
-      const croppedLength = croppingMeta.endIdx - croppingMeta.startIdx;
+      const croppedLength = croppingMeta.endIdx - croppingMeta.startIdx + 1;
       const processedLength = processedWaveform.ch1.length;
       showRecognitionCroppingToast({
         originalLength,
@@ -839,6 +907,30 @@ export default function RecognitionMode() {
         return;
       }
 
+      const testActivity = assessTestBurstActivity(
+        processedWaveform.ch2,
+        processedWaveform.meta.activityEvidence,
+        getTestCaptureDurationSeconds(processedWaveform)
+      );
+      if (!testActivity.usable) {
+        const errorMsg = `本次未检测到清晰动作：${testActivity.reason}。请保持静息后重新测试`;
+        setError(errorMsg);
+        updateActiveDiagnosticTrial({
+          status: 'failed',
+          failureReason: errorMsg,
+          processedWaveform,
+          result: { predictedCommand: '无法识别', confidence: 0, processingStatus: errorMsg },
+        });
+        addRecognitionHistoryRecord({
+          timestamp: new Date(),
+          command: '无法识别',
+          confidence: 0,
+          allScores: [],
+          processingStatus: errorMsg,
+        });
+        return;
+      }
+
       // 使用处理后的波形进行识别
       const normalizedWaveform = {
         ch1: processedWaveform.ch1,
@@ -848,8 +940,28 @@ export default function RecognitionMode() {
 
       const temporalBurstResult = recognizeTemporalBurst(
         normalizedWaveform.ch2,
-        temporalBurstModel
+        temporalBurstModel,
+        getTestCaptureDurationSeconds(processedWaveform)
       );
+
+      if (!temporalBurstResult && (!useCNNModel || !cnnModelLoaded)) {
+        const errorMsg = '节律模型无法评估本次动作时长，请重新测试或重新采集训练样本';
+        setError(errorMsg);
+        updateActiveDiagnosticTrial({
+          status: 'failed',
+          failureReason: errorMsg,
+          processedWaveform,
+          result: { predictedCommand: '无法识别', confidence: 0, processingStatus: errorMsg },
+        });
+        addRecognitionHistoryRecord({
+          timestamp: new Date(),
+          command: '无法识别',
+          confidence: 0,
+          allScores: [],
+          processingStatus: errorMsg,
+        });
+        return;
+      }
 
       if (useCNNModel && cnnModelLoaded) {
         // 使用 CNN 模型识别
@@ -1415,6 +1527,24 @@ export default function RecognitionMode() {
             </div>
           </div>
 
+          <div style={{
+            backgroundColor: '#1a1a1a',
+            border: `1px solid ${trainingStatus.canStart ? (temporalBurstModel.applicable ? '#2f6d50' : '#a4772a') : '#b44b4b'}`,
+            borderRadius: '4px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            color: '#ddd',
+            fontSize: '13px',
+          }}>
+            可用训练指令：{compatibleCommands.length}/{savedCommands.length}；被排除样本：{rejectedTrainingSampleCount} 条。
+            {' '}{trainingStatus.message}
+            {trainingExclusionDetails && (
+              <div style={{ marginTop: '8px', color: '#d6a26b' }}>
+                {trainingExclusionDetails}
+              </div>
+            )}
+          </div>
+
           {/* 识别控制 */}
           <div style={{
             display: 'flex',
@@ -1425,14 +1555,14 @@ export default function RecognitionMode() {
             {!isRecognizing ? (
               <button
                 onClick={handleStartRecognition}
-                disabled={!isConnected || savedCommands.length === 0 || isProcessingRecognition}
+                disabled={!isConnected || !trainingStatus.canStart || isProcessingRecognition}
                 style={{
                   padding: '12px 24px',
-                  backgroundColor: isConnected && savedCommands.length > 0 && !isProcessingRecognition ? '#d4af37' : '#666',
+                  backgroundColor: isConnected && trainingStatus.canStart && !isProcessingRecognition ? '#d4af37' : '#666',
                   color: '#000',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: isConnected && savedCommands.length > 0 && !isProcessingRecognition ? 'pointer' : 'not-allowed',
+                  cursor: isConnected && trainingStatus.canStart && !isProcessingRecognition ? 'pointer' : 'not-allowed',
                   fontWeight: 'bold',
                   fontSize: '14px',
                 }}
@@ -1491,7 +1621,7 @@ export default function RecognitionMode() {
                   const payload = buildRecognitionDiagnosticPackage({
                     trials: recognitionTrialsRef.current,
                     commands: savedCommands,
-                    sampleRate: HARDWARE_CONFIG.SAMPLE_RATE,
+                    sampleRate: getRestingBaselineSampleRate(globalElectrodeBaseline) ?? HARDWARE_CONFIG.SAMPLE_RATE,
                     context: {
                       confidenceThreshold,
                       adaptiveThreshold,

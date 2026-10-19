@@ -10,6 +10,9 @@ interface BaselineCaptureInput {
   durationMs: number;
   sampleCount: number;
   minimumSamples: number;
+  minimumSampleRate?: number;
+  maximumSampleRate?: number;
+  acceptedSampleRateRanges?: readonly { min: number; max: number }[];
 }
 
 export interface BaselineCaptureSnapshot {
@@ -26,6 +29,9 @@ export function evaluateBaselineCapture({
   durationMs,
   sampleCount,
   minimumSamples,
+  minimumSampleRate,
+  maximumSampleRate,
+  acceptedSampleRateRanges,
 }: BaselineCaptureInput): BaselineCaptureSnapshot {
   const safeDurationMs = Math.max(1, durationMs);
   const elapsedMs = Math.max(0, now - startedAt);
@@ -38,7 +44,12 @@ export function evaluateBaselineCapture({
   if (elapsedMs >= safeDurationMs) {
     status = sampleCount === 0
       ? 'no-data'
-      : sampleCount < minimumSamples
+      : sampleCount < minimumSamples ||
+          (minimumSampleRate !== undefined && measuredSampleRate < minimumSampleRate) ||
+          (maximumSampleRate !== undefined && measuredSampleRate > maximumSampleRate) ||
+          (acceptedSampleRateRanges !== undefined &&
+            !acceptedSampleRateRanges.some(({ min, max }) =>
+              measuredSampleRate >= min && measuredSampleRate <= max))
         ? 'insufficient'
         : 'complete';
   }
